@@ -54,7 +54,11 @@ export function useProviderAvailabilityLoginEntryGuard({
         : modelSelectionView;
       const availability = resolveProviderAvailabilityState({ modelSelectionView: refreshedView });
       const { hasUsableProvider, providerCount } = availability;
-      const shouldOpenLoginEntry = !providerFamilyDomain || (!user && !hasUsableProvider);
+      // 家族域缺失但已有可用 Provider（如欢迎页创建的自定义 API Provider）时不再强制弹出登录入口；
+      // 仅在完全没有可用 Provider 时才引导用户连接账号或填写 API Key。
+      const shouldOpenLoginEntry = providerFamilyDomain
+        ? !user && !hasUsableProvider
+        : !hasUsableProvider;
 
       // 未登录且没有可用模型配置时必须引导用户连接账号或填写 API Key。
       // 启动检查、API Key 设置回流等入口统一走这里，避免各处复制判断后语义分叉。
