@@ -15,6 +15,8 @@ import {
   ChannelClient,
   LoggingChannelServer,
   type ISocket,
+  type IMessagePassingProtocol,
+  type Event as RpcEvent,
 } from "@zcode/rpc";
 import type { TopicResourcePeers } from "@zcode/services/node";
 import { TOPIC_RESOURCE_RELAY_CHANNEL } from "@zcode/shared";
@@ -102,6 +104,104 @@ function setupChannelServer(
 ) {
   const socket = wrapWebSocket(ws);
   const protocol = new SocketProtocol(socket);
+  attachChannelServer(protocol, services, clientMode, resourcePeers, {
+    connectionIdPrefix: "server-ws",
+    socketOnClose: socket.onClose,
+  });
+}
+
+/**
+ * HTTP 长轮询 RPC 通道 —— 预览网关（ALB）对 WebSocket 数据帧转发不可靠时的降级通道。
+ *
+ * 背景：外网预览域名经阿里云 ALB 回源，WS 握手(101)可透传但升级后的数据帧会被静默
+ * 丢弃（浏览器与 node 客户端均复现：发帧零回包、readyState 一直 OPEN）。普通 HTTP
+ * 请求（页面/静态资源/REST API）完全正常。因此提供消息级的 HTTP 传输：
+ *   - POST /api/channel          创建通道，返回 channelId（服务端立即发 Initialize 帧）
+ *   - POST /api/channel/:id/up   上行帧（body = 一条完整 VSBuffer 消息）
+ *   - GET  /api/channel/:id/down 长轮询下行帧（多帧按 [u32 BE 长度][payload] 连接）
+ * 协议层（ChannelServer/ChannelClient）只依赖消息级 IMessagePassingProtocol，
+ * 这里直接实现消息级接口，跳过 SocketProtocol 的流分帧。
+ */
+class HttpChannelProtocol implements IMessagePassingProtocol {
+  private readonly downlink: VSBuffer[] = [];
+  private readonly messageEmitter = new Emitter<VSBuffer>();
+  private waiter: (() => void) | null = null;
+  lastActivity = Date.now();
+
+  readonly onMessage: RpcEvent<VSBuffer> = this.messageEmitter.event;
+
+  send(buffer: VSBuffer): void {
+    this.lastActivity = Date.now();
+    this.downlink.push(buffer);
+    this.waiter?.();
+  }
+
+  /** 客户端 → 服务端：注入一条完整消息。 */
+  pushIncoming(buffer: VSBuffer): void {
+    this.lastActivity = Date.now();
+    this.messageEmitter.fire(buffer);
+  }
+
+  /** 服务端 → 客户端：长轮询取下行帧，最多等待 timeoutMs。 */
+  async pull(timeoutMs: number): Promise<VSBuffer[]> {
+    this.lastActivity = Date.now();
+    if (this.downlink.length > 0) {
+      return this.downlink.splice(0);
+    }
+    await new Promise<void>((resolveWait) => {
+      const timer = setTimeout(() => {
+        this.waiter = null;
+        resolveWait();
+      }, timeoutMs);
+      this.waiter = () => {
+        clearTimeout(timer);
+        this.waiter = null;
+        resolveWait();
+      };
+    });
+    return this.downlink.splice(0);
+  }
+
+  dispose(): void {
+    this.waiter?.();
+    this.waiter = null;
+    this.messageEmitter.dispose();
+  }
+}
+
+interface HttpChannelEntry {
+  protocol: HttpChannelProtocol;
+  dispose: () => void;
+  createdAt: number;
+}
+
+const httpChannels = new Map<string, HttpChannelEntry>();
+
+/** 下行帧拼接格式：[u32 BE payload 长度][payload]... */
+function encodeDownlinkFrames(frames: VSBuffer[]): Uint8Array {
+  const total = frames.reduce((sum, f) => sum + 4 + f.byteLength, 0);
+  const out = new Uint8Array(total);
+  const view = new DataView(out.buffer);
+  let offset = 0;
+  for (const frame of frames) {
+    view.setUint32(offset, frame.byteLength, false);
+    offset += 4;
+    out.set(frame.buffer, offset);
+    offset += frame.byteLength;
+  }
+  return out;
+}
+
+function attachChannelServer(
+  protocol: IMessagePassingProtocol,
+  services: ServiceCollection,
+  clientMode: "desktop-continuous" | "web-remote-replayable",
+  resourcePeers?: TopicResourcePeers,
+  opts?: {
+    connectionIdPrefix?: string;
+    socketOnClose?: (listener: () => void) => { dispose(): void };
+  },
+): () => void {
   const rawServer = new ChannelServer(protocol, "server");
   // 用日志中间件包装，统一记录所有 RPC 调用
   const server = new LoggingChannelServer(rawServer, log);
@@ -113,7 +213,7 @@ function setupChannelServer(
     : undefined;
   const connectionScope = agentService
     ? createZCodeAgentConnectionScope(peer ? peer.wrapAgent(agentService) : agentService, {
-        connectionId: `server-ws-${randomUUID()}`,
+        connectionId: `${opts?.connectionIdPrefix ?? "server-ws"}-${randomUUID()}`,
         clientMode,
         role: clientMode === "desktop-continuous" ? "trusted-host-relay" : "terminal-client",
       })
@@ -135,12 +235,15 @@ function setupChannelServer(
     });
   }
   services.exposeOnChannelServer(server, overrides);
-  socket.onClose(() => {
+  const dispose = () => {
     peer?.dispose();
     reverseClient?.dispose();
     void connectionScope?.dispose();
     rawServer.dispose();
-  });
+  };
+  // 传输断开时释放连接作用域；HTTP 通道由路由层显式调 dispose，WS 由 socket close 驱动。
+  opts?.socketOnClose?.(dispose);
+  return dispose;
 }
 
 /** 存储 web 模式下的远程连接，key 为随机 ID */
@@ -357,6 +460,63 @@ export function createHttpServer(
 
   app.get("/api/server-info", (c) => c.json(createServerInfo(options)));
   app.post("/api/rpc-host-capability", (c) => c.json(hostCapabilities.issue()));
+
+  // ============================================================================
+  // HTTP 长轮询 RPC 通道（WebSocket 数据帧被预览网关丢弃时的降级传输，见
+  // HttpChannelProtocol 注释）。鉴权：/api/ 前缀沿用上方中间件（平台 Cookie /
+  // Lite Token），与 /ws 同一信任模型。
+  // ============================================================================
+  app.post("/api/channel", (c) => {
+    const channelId = randomUUID();
+    const protocol = new HttpChannelProtocol();
+    const dispose = attachChannelServer(protocol, services, "web-remote-replayable", undefined, {
+      connectionIdPrefix: "server-http",
+    });
+    httpChannels.set(channelId, { protocol, dispose, createdAt: Date.now() });
+    log(`[http-channel] created ${channelId} (active=${httpChannels.size})`);
+    return c.json({ channelId });
+  });
+
+  app.post("/api/channel/:channelId/up", async (c) => {
+    const entry = httpChannels.get(c.req.param("channelId"));
+    if (!entry) {
+      return c.json({ error: "channel not found" }, 404);
+    }
+    const body = await c.req.arrayBuffer();
+    if (body.byteLength > 0) {
+      entry.protocol.pushIncoming(VSBuffer.wrap(new Uint8Array(body)));
+    }
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/channel/:channelId/down", async (c) => {
+    const entry = httpChannels.get(c.req.param("channelId"));
+    if (!entry) {
+      return c.json({ error: "channel not found" }, 404);
+    }
+    const frames = await entry.protocol.pull(25_000);
+    if (frames.length === 0) {
+      return c.body(null, 204);
+    }
+    const payload = encodeDownlinkFrames(frames);
+    return c.body(payload as unknown as ArrayBuffer, 200, {
+      "content-type": "application/octet-stream",
+      "cache-control": "no-store",
+    });
+  });
+
+  // 通道 GC：超过 3 分钟无任何上下行活动即回收，防止僵尸通道泄漏。
+  setInterval(() => {
+    const now = Date.now();
+    for (const [channelId, entry] of httpChannels) {
+      if (now - entry.protocol.lastActivity > 180_000) {
+        entry.dispose();
+        entry.protocol.dispose();
+        httpChannels.delete(channelId);
+        log(`[http-channel] gc ${channelId} (active=${httpChannels.size})`);
+      }
+    }
+  }, 60_000).unref?.();
 
   // 普通 `/ws` 永远是 terminal-client；浏览器/任意客户端设置旧 mode header
   // 都不能再把自己提升为 trusted host。

@@ -61,16 +61,34 @@ function wrapBrowserWebSocket(ws: WebSocket): ISocket {
 
 export function connectViaWebSocket(
   wsUrl: string,
-  options?: WebSocketConnectionOptions,
+  options?: WebSocketConnectionOptions & {
+    /**
+     * 等待服务端 ChannelServer Initialize 帧的超时（毫秒）。
+     * 服务端在 WS 升级成功后立即发送 Initialize；若超时未收到，说明 WS
+     * 数据帧通道被中间层（如预览网关 ALB）静默丢弃，应视为连接失败并降级。
+     */
+    readyTimeoutMs?: number;
+  },
 ): Promise<IServiceAccessor> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let settled = false;
 
-    ws.addEventListener("error", () => {
-      if (!settled) {
-        reject(new Error(`WebSocket connection failed: ${wsUrl}`));
+    const settleFailure = (error: Error) => {
+      if (settled) {
+        return;
       }
+      settled = true;
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+      reject(error);
+    };
+
+    ws.addEventListener("error", () => {
+      settleFailure(new Error(`WebSocket connection failed: ${wsUrl}`));
     });
     ws.addEventListener("close", (event) => {
       options?.onClose?.({
@@ -79,22 +97,39 @@ export function connectViaWebSocket(
         wasClean: event.wasClean,
       });
 
-      if (!settled) {
-        reject(
-          new Error(
-            event.reason
-              ? `WebSocket closed before ready: ${event.reason}`
-              : `WebSocket closed before ready (${event.code})`,
-          ),
-        );
-      }
+      settleFailure(
+        event.reason
+          ? new Error(`WebSocket closed before ready: ${event.reason}`)
+          : new Error(`WebSocket closed before ready (${event.code})`),
+      );
     });
 
     ws.addEventListener("open", () => {
-      settled = true;
-      options?.onOpenSocket?.(ws);
       const socket = wrapBrowserWebSocket(ws);
-      resolve(connectViaProtocol(new SocketProtocol(socket)));
+      const client = new ChannelClient(new SocketProtocol(socket));
+
+      // 收到服务端 Initialize 帧才确认数据通道双向可用（握手成功 ≠ 数据可达）。
+      if (options?.readyTimeoutMs) {
+        const readyTimer = setTimeout(() => {
+          settleFailure(
+            new Error(
+              `WebSocket data channel not ready within ${options.readyTimeoutMs}ms (frames likely dropped by gateway)`,
+            ),
+          );
+        }, options.readyTimeoutMs);
+        const offInitialized = client.onDidInitialize(() => {
+          clearTimeout(readyTimer);
+          offInitialized.dispose();
+          if (!settled) {
+            settled = true;
+            options?.onOpenSocket?.(ws);
+            resolve(new RemoteServiceAccess(client));
+          }
+        });
+      } else {
+        options?.onOpenSocket?.(ws);
+        resolve(new RemoteServiceAccess(client));
+      }
     });
   });
 }

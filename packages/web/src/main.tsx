@@ -20,6 +20,7 @@ import "@zcode/ui/styles.css";
 import {
   connectViaProtocol,
   connectViaWebSocket,
+  connectViaHttpChannel,
   createAcknowledgedWebRemoteControlRelayProtocol,
   type WebSocketConnectionCloseEvent,
 } from "@zcode/client";
@@ -2558,8 +2559,18 @@ async function bootstrapWebApp() {
   }
 
   try {
+    // 预览网关（ALB）场景下 WS 握手可透传但数据帧会被静默丢弃：连接后若
+    // readyTimeoutMs 内未收到服务端 Initialize 帧，判定为数据面黑洞，降级到
+    // HTTP 长轮询 RPC 通道，避免登录后所有 RPC 挂起导致工作台黑屏。
     const services = await connectViaWebSocket(bootstrap.wsUrl, {
       onClose: () => {},
+      readyTimeoutMs: 6_000,
+    }).catch(async (wsError) => {
+      console.warn(
+        "[bootstrap] WebSocket 数据通道不可用，降级 HTTP 长轮询 RPC:",
+        wsError instanceof Error ? wsError.message : wsError,
+      );
+      return await connectViaHttpChannel();
     });
     const platform = createWebPlatform();
     document.title = "ZCode - Web + Server";
