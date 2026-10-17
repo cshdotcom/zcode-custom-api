@@ -2,6 +2,7 @@ export { App } from "./App.js";
 export { AppErrorBoundary, ScopedErrorBoundary } from "./ErrorBoundary.js";
 export type { ScopedErrorBoundaryVariant } from "./ErrorBoundary.js";
 export { Button, buttonVariants } from "./components/ui/button.js";
+export { Input } from "./components/ui/input.js";
 export { DesktopWindowFrame } from "./DesktopWindowFrame.js";
 export { WebRemoteControlDialog } from "./WebRemoteControlDialog.js";
 export {
@@ -73,6 +74,18 @@ export {
 } from "./hooks/index.js";
 
 export { ZCodeIntlProvider, useZCodeIntl, LocaleSwitcher } from "./i18n/index.js";
+export {
+  setPlatformUser,
+  getPlatformUser,
+  usePlatformUser,
+} from "./platformUserStore.js";
+export type {
+  PlatformUserInfo,
+  PlatformUserRole,
+  PlatformUserStatus,
+  PlatformAuthConfig,
+} from "./platformUserStore.js";
+export { setPlatformAuthConfig, getPlatformAuthConfig } from "./platformUserStore.js";
 export { ResourceManagerApp } from "./resource-manager/ResourceManagerApp.js";
 export type {
   ResourceManagerAppProps,

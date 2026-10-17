@@ -2462,6 +2462,8 @@ const enUS: Record<string, string> = {
   "settings.uiFontSizeDescription":
     "Adjust interface text without changing icons or layout dimensions.",
   "settings.systemTitle": "General",
+  "settings.platformTitle": "Platform",
+  "settings.platformAdminTitle": "Platform Administration",
   "settings.systemDescription": "These preferences affect the current window experience.",
   "settings.locale": "Language",
   "settings.localeDescription": "Choose the display language used by the application UI.",

@@ -13,8 +13,10 @@ import {
   Anchor,
   Brain,
   Blocks,
+  CircleUserRound,
   Globe2,
   Cable,
+  ShieldCheck,
   WandSparkles,
   Keyboard,
   FileSearch,
@@ -156,28 +158,54 @@ const BASE_SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     titleId: "settings.usageTitle",
     groupId: "dataAndStats",
   },
+  // 平台中心：自有用户系统的账号与分享管理（平台认证未启用时按角色过滤隐藏）。
+  {
+    id: "platform",
+    icon: CircleUserRound,
+    titleId: "settings.platformTitle",
+    groupId: "basics",
+  },
+  // 平台管理：仅平台管理员可见的用户 / 邀请码 / 用户组 / 系统设置控制台。
+  {
+    id: "platformAdmin",
+    icon: ShieldCheck,
+    titleId: "settings.platformAdminTitle",
+    groupId: "basics",
+  },
 ];
 
 // 兼容既有只读消费者：默认配置代表不带桌面平台能力的 Web 视图；
 // macOS/Windows/Linux 必须继续通过 createSettingsPageConfig 动态加入 Computer Use。
+// 平台分区依赖登录角色，只读消费方拿不到角色，一律不出现。
 export const SETTINGS_SECTIONS = BASE_SETTINGS_SECTIONS.filter(
-  (section) => section.id !== "computerUse" && isSettingsSectionEnabled(section.id),
+  (section) =>
+    section.id !== "computerUse" &&
+    section.id !== "platform" &&
+    section.id !== "platformAdmin" &&
+    isSettingsSectionEnabled(section.id),
 );
 
 export interface SettingsPageConfigOptions {
   isDesktop?: boolean;
   isMacDesktop?: boolean;
   isWindowsDesktop?: boolean;
+  /** 平台用户角色：null 表示平台账号体系未启用，两个平台分区均隐藏。 */
+  platformRole?: "admin" | "user" | "pending" | null;
 }
 
 export function createSettingsPageConfig({
   isDesktop = false,
   isMacDesktop = false,
   isWindowsDesktop = false,
+  platformRole = null,
 }: SettingsPageConfigOptions = {}) {
   const showComputerUse = isDesktop || isMacDesktop || isWindowsDesktop;
+  const showPlatform = platformRole !== null && platformRole !== "pending";
+  const showPlatformAdmin = platformRole === "admin";
   const settingsSections = BASE_SETTINGS_SECTIONS.filter((section) => {
     if (section.id === "computerUse" && !showComputerUse) return false;
+    if (section.id === "platform" && !showPlatform) return false;
+    if (section.id === "platformAdmin" && !showPlatformAdmin) return false;
     return isSettingsSectionEnabled(section.id);
   });
   const settingsSectionGroups = BASE_SETTINGS_SECTION_GROUPS.map((group) => ({

@@ -603,6 +603,8 @@ function RootInner({
       rootProviderAvailability.hydrated || rootModelSelectionRead.state.status === "error",
   });
   const isWebRemoteControlRoot = Boolean(webRemoteControlWorkspaceSwitcher);
+  // 平台登录门旁路在 useProviderAvailabilityLoginEntryGuard 内部实现：
+  // 平台会话活跃时仅改写「是否弹欢迎页」判定，门禁启动检查流程保持原时序。
   const providerAvailabilityLoginEntryGuardEnabled =
     shouldEnableProviderAvailabilityLoginEntryGuard({
       isWebRemoteControlRoot,

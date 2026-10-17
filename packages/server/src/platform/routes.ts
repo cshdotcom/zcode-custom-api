@@ -5,7 +5,7 @@ import { PASSWORD_MIN, type PlatformUser } from "./store.js";
 import { SearchService, SEARCH_PROVIDERS } from "./search.js";
 import type { RemoteBrowserExecutor } from "@zcode/browser-remote";
 import { ZcodeDataSnapshotReader } from "./snapshot.js";
-import { adminPageHtml, loginPageHtml, shareCenterPageHtml, shareViewPageHtml } from "./pages.js";
+import { shareViewPageHtml } from "./pages.js";
 
 /**
  * 平台路由：自有用户/登录系统（替代官方 z.ai 登录）+ 用户组 + 邀请码 + 系统配置 +
@@ -13,9 +13,11 @@ import { adminPageHtml, loginPageHtml, shareCenterPageHtml, shareViewPageHtml } 
  * OpenWebUI 自定义模式兼容端点）+ 远程浏览器桥状态 + 管理控制台。
  *
  * 鉴权模型：
- * - 平台开启后（ZCODE_PLATFORM_AUTH=1），除 /api/platform/auth/*、/login、/healthz、
- *   公开分享、/search 外，所有请求都需要有效会话 Cookie（zcode_platform_session）；
- *   未登录的页面请求 302 → /login。
+ * - 平台开启后（ZCODE_PLATFORM_AUTH=1），除 /api/platform/auth/*、/healthz、
+ *   公开分享、/search 外，所有 /api、/ws 请求都需要有效会话 Cookie
+ *   （zcode_platform_session）。页面请求一律放行到 SPA：登录/注册/审批等待
+ *   界面全部由 SPA 内原生渲染（与官方 WebLoginPage 同一设计语言），
+ *   不再有服务端 302 到独立手写页面的外挂链路。
  * - pending 角色用户仅能访问认证接口，业务接口一律 403（等待管理员审批）。
  * - 对外搜索端点 /search 用可选 Bearer Token（search.json 的 apiToken）保护，供 OpenWebUI 等外部系统接入。
  * - 内部服务（如搜索 MCP server）用 ZCODE_PLATFORM_SERVICE_TOKEN Bearer Token 访问 /api/platform/search。
@@ -81,22 +83,22 @@ export function createPlatformAuthMiddleware(deps: PlatformDeps) {
       INVITE_VALIDATE_RE.test(pathname);
     // 对外搜索端点（OpenWebUI / MCP server 接入）有独立的 Token 校验，不走平台会话强制鉴权。
     const isPublicSearch = pathname === "/search" || pathname === "/api/platform/search";
-    // 注入脚本与平台静态资源不带敏感信息，放行以便登录页复用样式。
-    const isPlatformAsset = pathname === "/platform/inject.js";
     // 无论是否强制鉴权，都先解析会话（/me、搜索 API、公共端点在已登录时需要 platformUser）。
     const user = sessionFromRequest(c, deps.store);
     if (user) c.set("platformUser", user);
-    if (isAuthPath || isLoginHtml || isHealth || isPublicSearch || isPublicShare || isPlatformAsset) {
+    if (isAuthPath || isLoginHtml || isHealth || isPublicSearch || isPublicShare) {
       await next();
       return;
     }
     if (user) {
-      // pending 用户：业务能力全部封禁，仅保留认证通道（见 isAuthPath）。
+      // pending 用户：业务 API 全部封禁，仅保留认证通道（见 isAuthPath）；
+      // 页面请求放行到 SPA，由登录门展示等待审批状态。
       if (user.role === "pending") {
         if (pathname.startsWith("/api/") || pathname.startsWith("/ws")) {
           return jsonError(c, `账号待审批：${deps.store.getConfig().pendingNotice}`, 403);
         }
-        return c.redirect("/login?pending=1", 302);
+        await next();
+        return;
       }
       await next();
       return;
@@ -104,7 +106,9 @@ export function createPlatformAuthMiddleware(deps: PlatformDeps) {
     if (pathname.startsWith("/api/") || pathname.startsWith("/ws")) {
       return jsonError(c, "Unauthorized: 请先登录平台账号", 401);
     }
-    return c.redirect("/login", 302);
+    // 页面请求放行：SPA fallback 返回 index.html，登录门在应用内完成认证。
+    await next();
+    return;
   };
 }
 
@@ -272,26 +276,13 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
     }
   });
 
-  // ---------- 登录页 / 管理页 / 分享中心 ----------
-  app.get("/login", (c) => {
-    if (!deps.store) return jsonError(c, "平台用户系统未启用", 403);
-    const pending = new URL(c.req.url).searchParams.get("pending") === "1";
-    return c.html(loginPageHtml(deps.store.needsSetup, deps.store.getConfig(), pending), 200);
-  });
-
-  app.get("/platform/admin", (c) => {
-    if (!deps.store) return jsonError(c, "平台用户系统未启用", 403);
-    const user = sessionFromRequest(c, deps.store);
-    if (!user) return c.redirect("/login", 302);
-    return c.html(adminPageHtml(), 200);
-  });
-
-  app.get("/platform/shares", (c) => {
-    if (!deps.store) return jsonError(c, "平台用户系统未启用", 403);
-    const user = sessionFromRequest(c, deps.store);
-    if (!user) return c.redirect("/login", 302);
-    return c.html(shareCenterPageHtml(), 200);
-  });
+  // ---------- 旧平台独立页面入口：全部收敛到 SPA 内原生界面 ----------
+  // 登录页/管理控制台/分享中心已分别融合为 SPA 登录门与设置页「平台中心」「平台管理」
+  // 分区，这里仅保留 302 兼容旧链接与收藏夹。
+  const redirectLegacyPlatformPage = (c: Context) => c.redirect("/", 302);
+  app.get("/login", redirectLegacyPlatformPage);
+  app.get("/platform/admin", redirectLegacyPlatformPage);
+  app.get("/platform/shares", redirectLegacyPlatformPage);
 
   app.get("/healthz", (c) => c.json({ ok: true }));
 

@@ -2316,6 +2316,8 @@ const zhCN: Record<string, string> = {
   "settings.uiFontSize": "界面字号",
   "settings.uiFontSizeDescription": "调整应用界面的文字大小，图标和布局尺寸不受影响。",
   "settings.systemTitle": "常规",
+  "settings.platformTitle": "平台中心",
+  "settings.platformAdminTitle": "平台管理",
   "settings.systemDescription": "这些设置会影响当前窗口的显示与交互。",
   "settings.locale": "界面语言",
   "settings.localeDescription": "选择应用 UI 的显示语言。",

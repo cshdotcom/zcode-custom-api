@@ -3,6 +3,7 @@ import type { UserInfo } from "@zcode/shared";
 import type { ModelSelectionView } from "@zcode/services";
 import { resolveProviderAvailabilityState } from "@/lib/modelProviderAvailability.js";
 import { logger } from "@/logger.js";
+import { usePlatformUser } from "@/platformUserStore.js";
 
 export interface ProviderAvailabilityLoginEntryGuardResult {
   hasUsableProvider: boolean;
@@ -34,6 +35,15 @@ export function useProviderAvailabilityLoginEntryGuard({
   const [startupCheckCompleted, setStartupCheckCompleted] = useState(!enabled);
   const startupCheckCompletedRef = useRef(false);
   const providerAvailabilityHydrated = modelSelectionView !== null;
+  // 平台登录门旁路：平台账号体系（自有用户系统）启用且已有活跃平台会话时，
+  // 平台登录即为应用登录身份，启动不再强制弹官方 Connect/Z.ai 欢迎页。
+  // 门禁本身的启动检查流程保持原样运行（时序与官方一致），仅改写最终判定；
+  // 连接模型供应商仍可随时通过侧栏 Connect 入口或「模型设置」完成。
+  const platformUser = usePlatformUser();
+  const platformSessionActive =
+    platformUser !== null &&
+    (platformUser.role === "admin" || platformUser.role === "user") &&
+    platformUser.status === "active";
 
   const syncLoginEntryWithProviderAvailability = useCallback(
     async (options: { forceRefresh?: boolean; reason: string }) => {
@@ -54,7 +64,8 @@ export function useProviderAvailabilityLoginEntryGuard({
         : modelSelectionView;
       const availability = resolveProviderAvailabilityState({ modelSelectionView: refreshedView });
       const { hasUsableProvider, providerCount } = availability;
-      const shouldOpenLoginEntry = !providerFamilyDomain || (!user && !hasUsableProvider);
+      const shouldOpenLoginEntry =
+        !platformSessionActive && (!providerFamilyDomain || (!user && !hasUsableProvider));
 
       // 未登录且没有可用模型配置时必须引导用户连接账号或填写 API Key。
       // 启动检查、API Key 设置回流等入口统一走这里，避免各处复制判断后语义分叉。
@@ -65,6 +76,7 @@ export function useProviderAvailabilityLoginEntryGuard({
         hasUsableProvider,
         hasUser: Boolean(user),
         hasProviderFamilyDomain: Boolean(providerFamilyDomain),
+        platformSessionActive,
         shouldOpenLoginEntry,
       });
       setLoginEntryOpen(shouldOpenLoginEntry);

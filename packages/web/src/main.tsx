@@ -9,7 +9,9 @@ import {
   installDocumentHiddenMotionPause,
   playTaskNotificationSound,
   setStreamClientId,
+  setPlatformUser,
   setWebRemoteControlTerminalTransportState,
+  type PlatformUserInfo,
   type Theme,
   type WebRemoteControlTerminalTransportState as UiWebRemoteControlTerminalTransportState,
 } from "@zcode/ui";
@@ -27,6 +29,7 @@ import {
 import { WebCallbackPage } from "./auth/WebCallbackPage.js";
 import { WebLoggedInWaitingPage } from "./auth/WebLoggedInWaitingPage.js";
 import { WebLoginPage } from "./auth/WebLoginPage.js";
+import { PlatformAuthPage } from "./auth/PlatformAuthPage.js";
 import { createWebAuthService } from "./auth/webAuthService.js";
 import { WEB_ZAI_OAUTH_CONFIG, resolveWebAuthDevReturnTo } from "./auth/webZaiOAuthConfig.js";
 import { parseOAuthState, resolveSafeAppReturnTo } from "./auth/oauthStateCodec.js";
@@ -408,6 +411,47 @@ function renderWebLoginPage(): void {
         });
       }}
     />,
+  );
+}
+
+/** 平台认证是否启用：/api/platform/auth/setup-status 可达且 enabled=true。 */
+async function probePlatformAuthEnabled(): Promise<boolean> {
+  try {
+    const response = await fetch("/api/platform/auth/setup-status", {
+      method: "POST",
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) return false;
+    const status = (await response.json()) as { enabled?: boolean };
+    return status.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读取平台会话；未登录返回 null（登录门据此在 SPA 内渲染平台登录页）。 */
+async function fetchPlatformUser(): Promise<PlatformUserInfo | null> {
+  try {
+    const response = await fetch("/api/platform/auth/me", {
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as PlatformUserInfo;
+  } catch {
+    return null;
+  }
+}
+
+function renderPlatformAuthPage(): void {
+  document.title = "ZCode";
+  root.render(
+    <AppErrorBoundary>
+      <PlatformAuthPage
+        onAuthenticated={() => {
+          void bootstrapWebApp();
+        }}
+      />
+    </AppErrorBoundary>,
   );
 }
 
@@ -2459,6 +2503,20 @@ async function bootstrapWebApp() {
 
     renderWebLoggedInWaitingPage(auth);
     return;
+  }
+
+  // 平台登录门（深度融合）：登录界面由 SPA 内原生渲染（官方 WebLoginPage 同款
+  // 设计语言），未登录时不进入工作台。平台认证未启用（桌面端/本地开发）时完全
+  // 保持官方默认启动链路。
+  if (await probePlatformAuthEnabled()) {
+    const platformUser = await fetchPlatformUser();
+    setPlatformUser(platformUser);
+    if (!platformUser) {
+      renderPlatformAuthPage();
+      return;
+    }
+  } else {
+    setPlatformUser(null);
   }
 
   let bootstrap: WebBootstrapResult;
