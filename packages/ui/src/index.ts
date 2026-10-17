@@ -93,6 +93,10 @@ export {
 } from "./platformUserStore.js";
 export type { PlatformAnnouncement } from "./platformUserStore.js";
 export { PlatformAnnouncementBanner } from "./platformAnnouncement.js";
+export {
+  readStoredLocalePreference,
+  writeStoredLocalePreference,
+} from "./settings/platformLocale.js";
 export { ResourceManagerApp } from "./resource-manager/ResourceManagerApp.js";
 export type {
   ResourceManagerAppProps,

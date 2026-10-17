@@ -1,9 +1,35 @@
 /**
  * 平台分区文案（「平台中心」+「平台管理」）：与官方 WebLoginPage/webAuthLocale
  * 同一套做法——分区内部文案不走全局 i18n 键表，语言跟随当前界面语言。
+ * 语言解析顺序：用户显式偏好（登录门/设置页写入 localStorage）→ 文档声明语言 → 浏览器语言。
  */
 
 export type PlatformLocale = "zh-CN" | "en-US";
+
+const LOCALE_PREFERENCE_STORAGE_KEY = "zcode-locale-preference";
+
+/** 与 @zcode/ui IntlProvider 的 LOCALE_PREFERENCE_KEY 一致的显式语言偏好读取。 */
+export function readStoredLocalePreference(): PlatformLocale | null {
+  try {
+    const raw = window.localStorage.getItem(LOCALE_PREFERENCE_STORAGE_KEY);
+    if (raw === "zh-CN" || raw === "en-US") return raw;
+    if (raw === "system") return null; // 跟随后续自动探测
+  } catch {
+    // localStorage 不可用（隐私模式等）→ 忽略
+  }
+  return null;
+}
+
+/** 写入显式语言偏好（登录门/平台设置页的语言切换共用）。 */
+export function writeStoredLocalePreference(locale: PlatformLocale): void {
+  try {
+    window.localStorage.setItem(LOCALE_PREFERENCE_STORAGE_KEY, locale);
+  } catch {
+    // 忽略持久化失败
+  }
+  // 同步文档语言，保证后续 resolvePlatform* 一致
+  document.documentElement.lang = locale;
+}
 
 export interface PlatformSectionCopy {
   platformDisabledHint: string;
@@ -550,7 +576,15 @@ export function platformEventLabel(type: string, locale?: string): string {
 }
 
 function resolvePlatformLocale(language?: string): PlatformLocale {
-  const candidate = language ?? document.documentElement.lang ?? navigator.language ?? "";
+  if (language !== undefined) {
+    return language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+  }
+  // 显式偏好优先（登录门切换按钮写入），其次文档声明语言（index.html lang）。
+  const stored = readStoredLocalePreference();
+  if (stored) return stored;
+  const docLang = document.documentElement.lang || "";
+  if (docLang) return docLang.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+  const candidate = navigator.language ?? "";
   return candidate.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
 }
 

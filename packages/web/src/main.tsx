@@ -2580,6 +2580,8 @@ async function bootstrapWebApp() {
         <ZCodeIntlProvider
           settingService={services.settingService}
           broadcastService={services.broadcastService}
+          defaultLocale="zh-CN"
+          resolveSystemLocale={() => "zh-CN"}
         >
           <Root
             services={services}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Button, Input, setPlatformAuthConfig } from "@zcode/ui";
+import { Button, Input, readStoredLocalePreference, setPlatformAuthConfig, writeStoredLocalePreference } from "@zcode/ui";
 import { getPlatformAuthCopy } from "./platformAuthLocale.js";
+import type { PlatformAuthLocale } from "./platformAuthLocale.js";
 
 /**
  * 平台登录门（深度融合版）：替代旧的独立手写登录页。
@@ -53,6 +54,15 @@ function resolveSafeNextPath(): string | null {
 }
 
 export function PlatformAuthPage({ onAuthenticated }: PlatformAuthPageProps) {
+  // 登录门内置中/EN 切换：写 localStorage 偏好 + 同步文档语言，重渲染后 copy 重新解析。
+  const [localeVersion, setLocaleVersion] = useState(0);
+  const currentLocale: PlatformAuthLocale = readStoredLocalePreference()
+    ?? (document.documentElement.lang.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US");
+  const toggleLocale = (): void => {
+    writeStoredLocalePreference(currentLocale === "zh-CN" ? "en-US" : "zh-CN");
+    setLocaleVersion((version) => version + 1);
+  };
+  void localeVersion; // copy 在渲染期重解析，版本号仅用于触发重渲染
   const copy = getPlatformAuthCopy();
   const [mode, setMode] = useState<AuthMode>("login");
   const [notice, setNotice] = useState<string | undefined>(undefined);
@@ -148,7 +158,8 @@ export function PlatformAuthPage({ onAuthenticated }: PlatformAuthPageProps) {
   if (pendingNotice !== null) {
     return (
       <main className="flex min-h-dvh items-center justify-center bg-background px-4 py-8 text-foreground">
-        <section className="w-full max-w-sm rounded-lg border border-card-border bg-card p-5 shadow-sm">
+        <section className="relative w-full max-w-sm rounded-lg border border-card-border bg-card p-5 shadow-sm">
+          <LocaleToggleButton current={currentLocale} onToggle={toggleLocale} />
           <div className="mb-5 flex items-center gap-3">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-accent text-ui-xs font-semibold text-foreground">
               Z
@@ -181,7 +192,8 @@ export function PlatformAuthPage({ onAuthenticated }: PlatformAuthPageProps) {
 
   return (
     <main className="flex min-h-dvh items-center justify-center bg-background px-4 py-8 text-foreground">
-      <section className="w-full max-w-sm rounded-lg border border-card-border bg-card p-5 shadow-sm">
+      <section className="relative w-full max-w-sm rounded-lg border border-card-border bg-card p-5 shadow-sm">
+        <LocaleToggleButton current={currentLocale} onToggle={toggleLocale} />
         <div className="mb-5 flex items-center gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-accent text-ui-xs font-semibold text-foreground">
             Z
@@ -296,5 +308,25 @@ export function PlatformAuthPage({ onAuthenticated }: PlatformAuthPageProps) {
         ) : null}
       </section>
     </main>
+  );
+}
+
+/** 登录卡片右上角的中/EN 语言切换（当前语言之外的目标语言以按钮形式展示）。 */
+function LocaleToggleButton({
+  current,
+  onToggle,
+}: {
+  current: PlatformAuthLocale;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="absolute right-3 top-3 rounded-md border border-card-border px-2 py-1 text-ui-xs text-foreground-subtle transition-colors hover:bg-accent hover:text-foreground"
+      aria-label={current === "zh-CN" ? "Switch to English" : "切换到中文"}
+      onClick={onToggle}
+    >
+      {current === "zh-CN" ? "EN" : "中文"}
+    </button>
   );
 }

@@ -952,9 +952,12 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
       return c.json({ enabled: false });
     }
     // probe=1 时主动探测远程浏览器连通性（否则返回缓存状态）。
+    // available → connected：执行桥内部字段名为 available，管理台 UI 消费 connected。
     if (c.req.query("probe") === "1") {
-      return c.json({ enabled: true, ...(await deps.browser.probe()) });
+      const probed = await deps.browser.probe();
+      return c.json({ enabled: true, ...probed, connected: probed.available });
     }
-    return c.json({ enabled: true, ...deps.browser.status() });
+    const cached = deps.browser.status();
+    return c.json({ enabled: true, ...cached, connected: cached.available });
   });
 }

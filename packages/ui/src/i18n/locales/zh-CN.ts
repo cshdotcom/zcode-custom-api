@@ -217,6 +217,9 @@ const zhCN: Record<string, string> = {
   "manualClaimPlan.banner.subtitle.oneTime": "{model} 一次性额度",
   "manualClaimPlan.claim.ticket.benefit": "{model} {amount} {unit}",
   "manualClaimPlan.claim.ticket.benefit.daily": "{model} 每日 {amount} {unit}",
+  "manualClaimPlan.banner.period.daily": "每日",
+  "manualClaimPlan.banner.period.oneTime": "一次性",
+  "manualClaimPlan.banner.bonus": "额度",
   "manualClaimPlan.banner.close": "关闭活动",
   "manualClaimPlan.banner.claim": "领取",
   "manualClaimPlan.banner.dismissConfirm.title": "您将错过一次领取机会",
@@ -2350,6 +2353,7 @@ const zhCN: Record<string, string> = {
     "在工作区中保存并复用长期上下文，新会话生效。开启后可能增加模型调用和 Token 成本。",
   "settings.memory.viewer.localOnly":
     "记忆详情仅支持在本地桌面端查看，请前往本地桌面端的“记忆”设置。",
+  "settings.memory.viewer.disabled": "开启工作区记忆后才能查看已保存的记忆。",
   "settings.memory.viewer.title": "已保存的工作区记忆",
   "settings.memory.viewer.description": "查看此设备上按工作区保存的记忆。",
   "settings.memory.viewer.projectsDescription": "选择一个项目，查看该项目保存的全部记忆。",

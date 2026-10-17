@@ -1,4 +1,6 @@
-type PlatformAuthLocale = "zh-CN" | "en-US";
+import { readStoredLocalePreference } from "@zcode/ui";
+
+export type PlatformAuthLocale = "zh-CN" | "en-US";
 
 /**
  * 平台登录门文案：与官方 webAuthLocale 同一套组织方式。
@@ -79,12 +81,15 @@ const PLATFORM_AUTH_COPY = {
 } satisfies Record<PlatformAuthLocale, PlatformAuthPageCopy>;
 
 function resolvePlatformAuthLocale(language?: string): PlatformAuthLocale {
-  const candidate =
-    language ??
-    document.documentElement.lang ??
-    navigator.language ??
-    navigator.languages?.[0] ??
-    "";
+  if (language !== undefined) {
+    return language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+  }
+  // 与平台分区同一套解析：显式偏好 → 文档声明语言 → 浏览器语言。
+  const stored = readStoredLocalePreference();
+  if (stored) return stored;
+  const docLang = document.documentElement.lang || "";
+  if (docLang) return docLang.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+  const candidate = navigator.language ?? navigator.languages?.[0] ?? "";
   return candidate.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
 }
 

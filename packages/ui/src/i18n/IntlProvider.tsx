@@ -130,12 +130,15 @@ const IntlContext = createContext<IntlContextValue | null>(null);
 /**
  * 国际化 Provider —— 管理当前语言和 intl 实例。
  * 如果传入 settingService，会从设置中读取初始语言并在切换时持久化。
+ * defaultLocale：本地无存储偏好、设置也无 locale 时的兑底语言
+ * （平台 Web 部署模式传 "zh-CN"，让首次访问默认中文，英文浏览器不再被强制英文界面）。
  */
 export function ZCodeIntlProvider({
   children,
   settingService,
   broadcastService,
   initialLocale,
+  defaultLocale,
   preferSettingServiceLocale = false,
   resolveSystemLocale: resolveHostSystemLocale,
 }: {
@@ -143,6 +146,7 @@ export function ZCodeIntlProvider({
   settingService?: ISettingService;
   broadcastService?: Pick<IBroadcastService, "send" | "onMessage">;
   initialLocale?: Locale;
+  defaultLocale?: Locale;
   preferSettingServiceLocale?: boolean;
   resolveSystemLocale?: () => Locale | Promise<Locale>;
 }) {
@@ -180,7 +184,7 @@ export function ZCodeIntlProvider({
   }, []);
 
   const [localePreference, setLocalePreferenceState] = useState<LocalePreference>(
-    () => initialLocale ?? readStoredPreference() ?? "system",
+    () => initialLocale ?? readStoredPreference() ?? defaultLocale ?? "system",
   );
   const [systemLocale, setSystemLocale] = useState<Locale>(() => resolveNavigatorSystemLocale());
   const enqueueLocalePreferenceUpdate = useCallback(

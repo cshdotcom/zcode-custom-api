@@ -49,7 +49,7 @@ export function PlatformAnnouncementBanner(): null | React.ReactElement {
         </div>
         <button
           type="button"
-          aria-label="Dismiss announcement"
+          aria-label="关闭公告"
           className="-mr-1 -mt-0.5 rounded-md p-1 text-foreground-subtle transition-colors hover:bg-surface hover:text-foreground"
           onClick={() => {
             try {
