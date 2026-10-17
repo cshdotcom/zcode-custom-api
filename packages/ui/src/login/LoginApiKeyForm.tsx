@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { isApiKeyAccess } from "@zcode/provider";
+import { isApiKeyAccess, type ProviderApiType } from "@zcode/provider";
 import { Loader2Icon, TriangleAlertIcon } from "lucide-react";
 import {
   BIGMODEL_PROVIDER_ID,
@@ -32,12 +32,17 @@ import { renderOAuthProviderIcon } from "@/lib/oauthProviderIcon.js";
 import {
   buildLoginApiKeyDefaultModelPreferenceFromSelection,
   buildLoginApiKeySkipSettings,
+  parseLoginCustomModelIds,
   resolveLoginApiKeyDefaultProvider,
   resolveLoginApiKeyTemplateId,
   resolveLoginApiKeyProviderLabel,
   shouldShowLoginApiKeyLink,
   type ApiKeyProviderChoice,
 } from "@/login/LoginApiKeyForm.helpers.js";
+import {
+  PROVIDER_CONNECTION_API_FORMATS,
+  resolveProviderConnectionApiFormatDisplayLabel,
+} from "@/settings/model-provider-section/ProviderApiFormatSelect.js";
 import { useZCodeStore } from "@/store/StoreProvider.js";
 
 interface LoginApiKeyFormProps {
@@ -55,6 +60,9 @@ export function LoginApiKeyForm({ onCancel, onSaved, onSkipped }: LoginApiKeyFor
     resolveLoginApiKeyDefaultProvider(locale),
   );
   const [apiKeyValue, setApiKeyValue] = useState("");
+  const [customApiFormat, setCustomApiFormat] = useState<ProviderApiType>("anthropic-messages");
+  const [customBaseUrl, setCustomBaseUrl] = useState("");
+  const [customModelIds, setCustomModelIds] = useState("");
   const [saving, setSaving] = useState(false);
   const [skipping, setSkipping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +71,10 @@ export function LoginApiKeyForm({ onCancel, onSaved, onSkipped }: LoginApiKeyFor
     providerSettingsRead.state.status === "ready" ? providerSettingsRead.state.view : null;
 
   const providerLabel = resolveLoginApiKeyProviderLabel(providerChoice);
-  const templateId = resolveLoginApiKeyTemplateId(providerChoice);
+  const isCustomProvider = providerChoice === "custom";
+  const templateId = isCustomProvider
+    ? undefined
+    : resolveLoginApiKeyTemplateId(providerChoice);
   const templateAccess = providerSettingsView?.providerTemplates.find(
     (template) => template.templateId === templateId,
   )?.config.access;
@@ -75,6 +86,11 @@ export function LoginApiKeyForm({ onCancel, onSaved, onSkipped }: LoginApiKeyFor
     const apiKey = apiKeyValue.trim();
     if (!apiKey) {
       setError(intl.formatMessage({ id: "login.apiKey.emptyError" }));
+      return;
+    }
+
+    if (isCustomProvider) {
+      await saveCustomApiProvider(apiKey);
       return;
     }
 
@@ -122,10 +138,66 @@ export function LoginApiKeyForm({ onCancel, onSaved, onSkipped }: LoginApiKeyFor
     }
   };
 
+  /** 欢迎页自定义 API：直接创建标准个人 Provider（API 类型 + Base URL + Key + 模型列表）。 */
+  const saveCustomApiProvider = async (apiKey: string) => {
+    const baseUrl = customBaseUrl.trim().replace(/\/+$/u, "");
+    if (!baseUrl) {
+      setError(intl.formatMessage({ id: "login.apiKey.custom.baseUrlEmptyError" }));
+      return;
+    }
+    const modelIds = parseLoginCustomModelIds(customModelIds);
+    if (modelIds.length === 0) {
+      setError(intl.formatMessage({ id: "login.apiKey.custom.modelEmptyError" }));
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      const created = await providerSettingsService.createPersonalProvider({
+        providerName: intl.formatMessage({ id: "login.apiKey.custom.providerName" }),
+        initialConfig: {
+          access: { type: "api-key", apiKey },
+          api: { type: customApiFormat, baseUrl },
+        },
+      });
+      for (const modelId of modelIds) {
+        await providerSettingsService.addPersonalModel(created.providerId, modelId, {});
+      }
+      const defaultModelPreference = buildLoginApiKeyDefaultModelPreferenceFromSelection(
+        await modelSelectionService.getView(),
+        created.providerId,
+      );
+      markApiKeyLoginSuccess(defaultModelPreference);
+      await onSaved();
+    } catch (saveError) {
+      logger.error("[LoginEntry] 保存自定义 API provider 失败", {
+        apiFormat: customApiFormat,
+        baseUrl,
+        error: saveError,
+      });
+      setError(
+        intl.formatMessage(
+          { id: "login.apiKey.saveError" },
+          {
+            error: saveError instanceof Error ? saveError.message : String(saveError),
+          },
+        ),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const skipApiKeyProvider = async () => {
     setSkipping(true);
     setError(null);
     try {
+      if (isCustomProvider) {
+        // 自定义 API Provider 不绑定 Z.ai/BigModel 家族域，跳过时不写入家族域设置。
+        await onSkipped();
+        return;
+      }
       // 跳过只表示用户确认当前 provider family 运行域，不能写入空 API Key
       // 或触发 API Key 登录成功事件，否则后续模型选择会误以为已有可用凭据。
       await settingService.update(buildLoginApiKeySkipSettings(providerChoice, Date.now()));
@@ -193,9 +265,112 @@ export function LoginApiKeyForm({ onCancel, onSaved, onSkipped }: LoginApiKeyFor
                     id: "login.apiKey.provider.bigmodel",
                   })}
                 </SelectItem>
+                <SelectItem
+                  value="custom"
+                  className="rounded-md"
+                  data-testid={testId(TID_LOGIN_API_KEY_PROVIDER_ITEM, "custom")}
+                >
+                  {intl.formatMessage({ id: "login.apiKey.provider.custom" })}
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
+          {isCustomProvider ? (
+            <div className="space-y-2">
+              <div>
+                <label
+                  htmlFor="login-custom-api-format"
+                  className="text-ui-sm font-medium text-foreground-subtle"
+                >
+                  {intl.formatMessage({ id: "login.apiKey.custom.apiFormatLabel" })}
+                </label>
+                <Select
+                  value={customApiFormat}
+                  onValueChange={(value) => setCustomApiFormat(value as ProviderApiType)}
+                  disabled={busy}
+                >
+                  <SelectTrigger
+                    id="login-custom-api-format"
+                    size="lg"
+                    className="mt-1 h-10 w-full text-ui-base"
+                    aria-label={intl.formatMessage({
+                      id: "login.apiKey.custom.apiFormatLabel",
+                    })}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end" className="rounded-lg">
+                    {PROVIDER_CONNECTION_API_FORMATS.map((format) => (
+                      <SelectItem
+                        key={format}
+                        value={format}
+                        className="rounded-md"
+                        data-testid={testId(TID_LOGIN_API_KEY_PROVIDER_ITEM, format)}
+                      >
+                        {resolveProviderConnectionApiFormatDisplayLabel(intl, format)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label
+                  htmlFor="login-custom-api-base-url"
+                  className="text-ui-sm font-medium text-foreground-subtle"
+                >
+                  {intl.formatMessage({ id: "login.apiKey.custom.baseUrlLabel" })}
+                </label>
+                <Input
+                  id="login-custom-api-base-url"
+                  type="text"
+                  size="lg"
+                  className="mt-1 h-10 w-full text-ui-base"
+                  data-testid={testId(TID_LOGIN_API_KEY_INPUT, "custom-base-url")}
+                  aria-label={intl.formatMessage({
+                    id: "login.apiKey.custom.baseUrlPlaceholder",
+                  })}
+                  value={customBaseUrl}
+                  placeholder={intl.formatMessage({
+                    id: "login.apiKey.custom.baseUrlPlaceholder",
+                  })}
+                  autoComplete="off"
+                  disabled={busy}
+                  onChange={(event) => {
+                    setCustomBaseUrl(event.target.value);
+                    setError(null);
+                  }}
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="login-custom-api-model-ids"
+                  className="text-ui-sm font-medium text-foreground-subtle"
+                >
+                  {intl.formatMessage({ id: "login.apiKey.custom.modelIdLabel" })}
+                </label>
+                <Input
+                  id="login-custom-api-model-ids"
+                  type="text"
+                  size="lg"
+                  className="mt-1 h-10 w-full text-ui-base"
+                  data-testid={testId(TID_LOGIN_API_KEY_INPUT, "custom-model-ids")}
+                  aria-label={intl.formatMessage({
+                    id: "login.apiKey.custom.modelIdPlaceholder",
+                  })}
+                  value={customModelIds}
+                  placeholder={intl.formatMessage({
+                    id: "login.apiKey.custom.modelIdPlaceholder",
+                  })}
+                  autoComplete="off"
+                  disabled={busy}
+                  onChange={(event) => {
+                    setCustomModelIds(event.target.value);
+                    setError(null);
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
           <div className="relative">
             <Input
               id="login-api-key"
