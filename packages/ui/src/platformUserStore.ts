@@ -36,6 +36,7 @@ type Listener = () => void;
 
 let platformUser: PlatformUserInfo | null = null;
 let platformAuthConfig: PlatformAuthConfig = { enabled: false, needsSetup: false, registrationOpen: false, requireInvite: false };
+let platformAnnouncement: PlatformAnnouncement | null = null;
 const listeners = new Set<Listener>();
 
 function emit(): void {
@@ -58,6 +59,25 @@ export function setPlatformAuthConfig(config: PlatformAuthConfig): void {
 
 export function getPlatformAuthConfig(): PlatformAuthConfig {
   return platformAuthConfig;
+}
+
+/** 工作台公告（管理员在平台管理→系统里维护，登录后拉取一次）。 */
+export interface PlatformAnnouncement {
+  title: string;
+  body: string;
+}
+
+export function setPlatformAnnouncement(announcement: PlatformAnnouncement | null): void {
+  platformAnnouncement = announcement;
+  emit();
+}
+
+export function getPlatformAnnouncement(): PlatformAnnouncement | null {
+  return platformAnnouncement;
+}
+
+export function usePlatformAnnouncement(): PlatformAnnouncement | null {
+  return useSyncExternalStore(subscribe, getPlatformAnnouncement, getPlatformAnnouncement);
 }
 
 function subscribe(listener: Listener): () => void {

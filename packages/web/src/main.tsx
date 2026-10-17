@@ -9,6 +9,7 @@ import {
   installDocumentHiddenMotionPause,
   playTaskNotificationSound,
   setStreamClientId,
+  setPlatformAnnouncement,
   setPlatformUser,
   setWebRemoteControlTerminalTransportState,
   type PlatformUserInfo,
@@ -439,6 +440,27 @@ async function fetchPlatformUser(): Promise<PlatformUserInfo | null> {
     return (await response.json()) as PlatformUserInfo;
   } catch {
     return null;
+  }
+}
+
+/** 拉取工作台公告（平台认证开启时登录后调用一次；失败静默）。 */
+async function refreshPlatformAnnouncement(): Promise<void> {
+  try {
+    const response = await fetch("/api/platform/announcement", {
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) {
+      setPlatformAnnouncement(null);
+      return;
+    }
+    const data = (await response.json()) as { enabled?: boolean; title?: string; body?: string };
+    setPlatformAnnouncement(
+      data.enabled && (data.title || data.body)
+        ? { title: data.title ?? "", body: data.body ?? "" }
+        : null,
+    );
+  } catch {
+    setPlatformAnnouncement(null);
   }
 }
 
@@ -2515,6 +2537,7 @@ async function bootstrapWebApp() {
       renderPlatformAuthPage();
       return;
     }
+    void refreshPlatformAnnouncement();
   } else {
     setPlatformUser(null);
   }

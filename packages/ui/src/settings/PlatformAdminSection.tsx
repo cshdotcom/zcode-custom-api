@@ -21,13 +21,16 @@ import {
   platformApi,
   platformApiDelete,
   type PlatformBrowserStatus,
+  type PlatformEventRow,
   type PlatformGroupRow,
   type PlatformInviteRow,
+  type PlatformKbDocRow,
   type PlatformSearchConfig,
+  type PlatformStatsRow,
   type PlatformSystemConfig,
   type PlatformUserRow,
 } from "./platformApi.js";
-import { getPlatformAdminSectionCopy } from "./platformLocale.js";
+import { getPlatformAdminSectionCopy, platformEventLabel } from "./platformLocale.js";
 
 /**
  * 设置页「平台管理」分区（仅管理员可见）：
@@ -36,7 +39,7 @@ import { getPlatformAdminSectionCopy } from "./platformLocale.js";
  * 与其他官方设置分区共用同一套侧栏、卡片、表格与原语。
  */
 
-type AdminTab = "users" | "invites" | "groups" | "system" | "search" | "browser";
+type AdminTab = "users" | "invites" | "groups" | "knowledge" | "usage" | "system" | "search" | "browser";
 
 function formatDateTime(value: number | undefined, locale: string): string {
   if (!value) return "—";
@@ -833,6 +836,30 @@ function SystemTab(): React.ReactElement {
               onChange={(event) => setConfig({ ...config, pendingNotice: event.target.value })}
             />
           </Field>
+          <div className="flex items-center justify-between gap-4 border-t border-border pt-4">
+            <span className="text-ui-base text-foreground">{copy.configAnnouncementEnabled}</span>
+            <Switch
+              checked={config.announcementEnabled}
+              onCheckedChange={(checked) => setConfig({ ...config, announcementEnabled: checked })}
+            />
+          </div>
+          {config.announcementEnabled ? (
+            <div className="grid gap-3 border-t border-border pt-4">
+              <Field label={copy.configAnnouncementTitle}>
+                <Input
+                  value={config.announcementTitle}
+                  onChange={(event) => setConfig({ ...config, announcementTitle: event.target.value })}
+                />
+              </Field>
+              <Field label={copy.configAnnouncementBody}>
+                <Textarea
+                  rows={2}
+                  value={config.announcementBody}
+                  onChange={(event) => setConfig({ ...config, announcementBody: event.target.value })}
+                />
+              </Field>
+            </div>
+          ) : null}
         </div>
         {error ? <p className="text-ui-xs text-destructive">{error}</p> : null}
         <div className="flex justify-end border-t border-border pt-3">
@@ -1039,6 +1066,319 @@ function BrowserTab(): React.ReactElement {
 
 // ---------------- 分区入口 ----------------
 
+// ---------------- 知识库 ----------------
+
+function KnowledgeTab(): React.ReactElement {
+  const { intl } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const [docs, setDocs] = useState<PlatformKbDocRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [filename, setFilename] = useState("");
+  const [content, setContent] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      const data = await platformApi<{ docs: PlatformKbDocRow[] }>("/api/platform/kb");
+      setDocs(data.docs);
+    } catch (requestError) {
+      setDocs([]);
+      setError(errorText(requestError, copy.loadFailed));
+    }
+  }, [copy.loadFailed]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const create = async (): Promise<void> => {
+    setCreateBusy(true);
+    setError(null);
+    setHint(null);
+    try {
+      await platformApi("/api/platform/kb", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          ...(filename.trim() ? { filename: filename.trim() } : {}),
+          content,
+        }),
+      });
+      setTitle("");
+      setFilename("");
+      setContent("");
+      setHint(copy.kbUploaded);
+      await load();
+    } catch (requestError) {
+      setError(errorText(requestError, copy.loadFailed));
+    } finally {
+      setCreateBusy(false);
+    }
+  };
+
+  const remove = async (id: string): Promise<void> => {
+    setBusyId(id);
+    setError(null);
+    try {
+      await platformApiDelete(`/api/platform/kb/${id}`);
+      await load();
+    } catch (requestError) {
+      setError(errorText(requestError, copy.loadFailed));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onPickFile = async (file: File | undefined): Promise<void> => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setTitle((prev) => prev || file.name.replace(/\.[^.]+$/, ""));
+      setFilename(file.name);
+      setContent(text);
+    } catch {
+      setError(copy.loadFailed);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card title={copy.kbTitle} description={copy.kbDescription}>
+        <div className="grid gap-3 px-4 py-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label={copy.kbDocTitleLabel}>
+              <Input value={title} onChange={(event) => setTitle(event.target.value)} />
+            </Field>
+            <Field label={copy.kbFilenameLabel}>
+              <Input
+                value={filename}
+                onChange={(event) => setFilename(event.target.value)}
+                placeholder="manual.md"
+              />
+            </Field>
+          </div>
+          <Field label={copy.kbContentLabel}>
+            <Textarea
+              rows={6}
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+            />
+          </Field>
+          <p className="text-ui-xs text-foreground-subtle">{copy.kbContentHint}</p>
+          <input
+            type="file"
+            accept=".txt,.md,.markdown,.json,.csv,.log,.xml,.yml,.yaml,.html,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.sql,.sh,text/*"
+            className="text-ui-xs text-foreground-subtle file:mr-3 file:rounded-md file:border-0 file:bg-surface file:px-3 file:py-1.5 file:text-ui-xs file:text-foreground"
+            onChange={(event) => void onPickFile(event.target.files?.[0])}
+          />
+          {error ? <p className="text-ui-xs text-destructive">{error}</p> : null}
+          {hint ? <p className="text-ui-xs text-foreground-subtle">{hint}</p> : null}
+          <div className="flex justify-end border-t border-border pt-3">
+            <Button
+              size="sm"
+              disabled={createBusy || !title.trim() || !content.trim()}
+              onClick={() => void create()}
+            >
+              {createBusy ? copy.savingAction : copy.kbUploadAction}
+            </Button>
+          </div>
+        </div>
+      </Card>
+      <Card title={copy.kbTitle} description={undefined}>
+        {docs === null ? (
+          <div className="flex items-center justify-center px-4 py-10 text-foreground-subtle">
+            <Spinner className="size-5" />
+          </div>
+        ) : docs.length === 0 ? (
+          <div className="px-4 py-6 text-center text-ui-sm text-foreground-subtle">{copy.kbEmpty}</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-ui-sm">
+              <thead>
+                <tr className="text-left text-ui-xs text-foreground-subtle">
+                  <th className="px-4 py-2 font-medium">{copy.colTitle}</th>
+                  <th className="px-3 py-2 font-medium">{copy.colSize}</th>
+                  <th className="px-3 py-2 font-medium">{copy.colChunks}</th>
+                  <th className="px-3 py-2 font-medium">{copy.colCreated}</th>
+                  <th className="px-4 py-2 text-right font-medium">{copy.colActions}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {docs.map((doc) => (
+                  <tr key={doc.id} className="border-t border-border">
+                    <td className="max-w-64 truncate px-4 py-2" title={doc.filename || doc.title}>
+                      {doc.title}
+                    </td>
+                    <td className="px-3 py-2 tabular-nums text-foreground-subtle">
+                      {(doc.size / 1024).toFixed(1)} KB
+                    </td>
+                    <td className="px-3 py-2 tabular-nums text-foreground-subtle">{doc.chunkCount}</td>
+                    <td className="px-3 py-2 text-ui-xs text-foreground-subtle">
+                      {formatDateTime(doc.createdAt, intl.locale)}
+                    </td>
+                    <td className="px-4 py-2">
+                      <div className="flex items-center justify-end">
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          className="text-destructive"
+                          disabled={busyId === doc.id}
+                          onClick={() => {
+                            if (window.confirm(copy.kbDeleteConfirm)) void remove(doc.id);
+                          }}
+                        >
+                          {copy.actionDelete}
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---------------- 用量统计与审计日志 ----------------
+
+const AUDIT_EVENT_TYPES = [
+  "auth.login",
+  "auth.login_failed",
+  "auth.register",
+  "auth.logout",
+  "share.create",
+  "search.query",
+  "prompt.create",
+  "kb.create",
+  "kb.delete",
+] as const;
+
+function UsageTab(): React.ReactElement {
+  const { intl } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const [stats, setStats] = useState<PlatformStatsRow | null>(null);
+  const [events, setEvents] = useState<PlatformEventRow[] | null>(null);
+  const [typeFilter, setTypeFilter] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [statsData, eventsData] = await Promise.all([
+          platformApi<PlatformStatsRow>("/api/platform/admin/stats"),
+          platformApi<{ events: PlatformEventRow[] }>(
+            typeFilter
+              ? `/api/platform/admin/events?type=${encodeURIComponent(typeFilter)}&limit=200`
+              : "/api/platform/admin/events?limit=200",
+          ),
+        ]);
+        setStats(statsData);
+        setEvents(eventsData.events);
+      } catch (requestError) {
+        setError(errorText(requestError, copy.loadFailed));
+      }
+    })();
+  }, [typeFilter, copy.loadFailed]);
+
+  const cards: Array<{ label: string; value: number }> = stats
+    ? [
+        { label: copy.statUsers, value: stats.users },
+        { label: copy.statPending, value: stats.pendingUsers },
+        { label: copy.statSessions, value: stats.activeSessions },
+        { label: copy.statLogins24h, value: stats.logins24h },
+        { label: copy.statSearches24h, value: stats.searches24h },
+        { label: copy.statShares, value: stats.shares },
+        { label: copy.statPrompts, value: stats.prompts },
+        { label: copy.statKbDocs, value: stats.kbDocs },
+      ]
+    : [];
+
+  return (
+    <div className="space-y-4">
+      <Card title={copy.usageTitle} description={copy.usageDescription}>
+        {stats === null ? (
+          <div className="flex items-center justify-center px-4 py-10 text-foreground-subtle">
+            <Spinner className="size-5" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 px-4 py-4 sm:grid-cols-4">
+            {cards.map((card) => (
+              <div
+                key={card.label}
+                className="rounded-xl border border-border bg-surface px-4 py-3"
+              >
+                <div className="text-ui-xs text-foreground-subtle">{card.label}</div>
+                <div className="mt-1 text-ui-xl font-semibold tabular-nums text-foreground">{card.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+      <Card
+        title={copy.auditTitle}
+        description={copy.auditDescription}
+        action={
+          <Select value={typeFilter || "__all__"} onValueChange={(next) => setTypeFilter(next === "__all__" ? "" : next)}>
+            <SelectTrigger size="sm" className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">{copy.auditFilterAll}</SelectItem>
+              {AUDIT_EVENT_TYPES.map((type) => (
+                <SelectItem key={type} value={type}>
+                  {platformEventLabel(type, intl.locale)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        }
+      >
+        {error ? <div className="px-4 py-3 text-ui-xs text-destructive">{error}</div> : null}
+        {events === null ? (
+          <div className="flex items-center justify-center px-4 py-10 text-foreground-subtle">
+            <Spinner className="size-5" />
+          </div>
+        ) : events.length === 0 ? (
+          <div className="px-4 py-6 text-center text-ui-sm text-foreground-subtle">{copy.auditEmpty}</div>
+        ) : (
+          <div className="max-h-96 overflow-y-auto">
+            <table className="w-full text-ui-sm">
+              <thead>
+                <tr className="text-left text-ui-xs text-foreground-subtle">
+                  <th className="px-4 py-2 font-medium">{copy.colEvent}</th>
+                  <th className="px-3 py-2 font-medium">{copy.colUsername}</th>
+                  <th className="px-3 py-2 font-medium">{copy.colDetail}</th>
+                  <th className="px-4 py-2 font-medium">{copy.colCreated}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.map((event) => (
+                  <tr key={event.id} className="border-t border-border">
+                    <td className="px-4 py-2 whitespace-nowrap">{platformEventLabel(event.type, intl.locale)}</td>
+                    <td className="px-3 py-2 text-foreground-subtle">{event.username || "—"}</td>
+                    <td className="max-w-72 truncate px-3 py-2 text-ui-xs text-foreground-subtle" title={event.detail}>
+                      {event.detail || "—"}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap text-ui-xs text-foreground-subtle">
+                      {formatDateTime(event.createdAt, intl.locale)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 export function PlatformAdminSection() {
   const { intl } = useZCodeIntl();
   const [tab, setTab] = useState<AdminTab>("users");
@@ -1049,6 +1389,8 @@ export function PlatformAdminSection() {
       { value: "users" as const, label: copy.tabUsers },
       { value: "invites" as const, label: copy.tabInvites },
       { value: "groups" as const, label: copy.tabGroups },
+      { value: "knowledge" as const, label: copy.tabKnowledge },
+      { value: "usage" as const, label: copy.tabUsage },
       { value: "system" as const, label: copy.tabSystem },
       { value: "search" as const, label: copy.tabSearch },
       { value: "browser" as const, label: copy.tabBrowser },
@@ -1062,6 +1404,8 @@ export function PlatformAdminSection() {
       {tab === "users" ? <UsersTab /> : null}
       {tab === "invites" ? <InvitesTab /> : null}
       {tab === "groups" ? <GroupsTab /> : null}
+      {tab === "knowledge" ? <KnowledgeTab /> : null}
+      {tab === "usage" ? <UsageTab /> : null}
       {tab === "system" ? <SystemTab /> : null}
       {tab === "search" ? <SearchTab /> : null}
       {tab === "browser" ? <BrowserTab /> : null}

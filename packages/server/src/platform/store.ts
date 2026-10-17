@@ -85,6 +85,54 @@ export interface PlatformConfig {
   defaultRole: "user" | "pending";
   loginNotice?: string;
   pendingNotice: string;
+  announcementEnabled: boolean;
+  announcementTitle?: string;
+  announcementBody?: string;
+}
+
+export interface PlatformPrompt {
+  id: string;
+  ownerId?: string;
+  ownerUsername?: string;
+  title: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PlatformKbDoc {
+  id: string;
+  title: string;
+  filename?: string;
+  size: number;
+  chunkCount: number;
+  createdAt: number;
+}
+
+export interface PlatformKbHit {
+  docId: string;
+  docTitle: string;
+  snippet: string;
+}
+
+export interface PlatformEvent {
+  id: number;
+  type: string;
+  userId?: string;
+  username?: string;
+  detail?: string;
+  createdAt: number;
+}
+
+export interface PlatformStats {
+  users: number;
+  pendingUsers: number;
+  activeSessions: number;
+  shares: number;
+  prompts: number;
+  kbDocs: number;
+  logins24h: number;
+  searches24h: number;
 }
 
 interface UserRow {
@@ -118,6 +166,7 @@ export const DEFAULT_USER_PERMISSIONS: Record<string, boolean> = {
 export class PlatformStore {
   readonly #db: DatabaseSync;
   readonly #filePath: string;
+  #ftsEnabled = false;
 
   constructor(dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
@@ -185,7 +234,50 @@ export class PlatformStore {
       );
       CREATE INDEX IF NOT EXISTS idx_shares_resource ON shares (resource_type, resource_id);
       CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members (user_id);
+      CREATE TABLE IF NOT EXISTS prompts (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts (owner_id);
+      CREATE TABLE IF NOT EXISTS kb_docs (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        filename TEXT,
+        size INTEGER NOT NULL DEFAULT 0,
+        chunk_count INTEGER NOT NULL DEFAULT 0,
+        owner_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS kb_chunks (
+        id TEXT PRIMARY KEY,
+        doc_id TEXT NOT NULL,
+        ord INTEGER NOT NULL,
+        content TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc ON kb_chunks (doc_id);
+      CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        user_id TEXT,
+        username TEXT,
+        detail TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_time ON events (created_at DESC);
     `);
+    // FTS5 全文索引（Node 24 内置 SQLite 通常启用；不可用时回退 LIKE 检索）。
+    try {
+      this.#db.exec(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(content, doc_id UNINDEXED);",
+      );
+      this.#ftsEnabled = true;
+    } catch {
+      this.#ftsEnabled = false;
+    }
   }
 
   get filePath(): string {
@@ -216,6 +308,9 @@ export class PlatformStore {
       ...(read("loginNotice") ? { loginNotice: read("loginNotice") } : {}),
       pendingNotice:
         read("pendingNotice") ?? "账号已创建，等待管理员审批后即可使用。如急用请联系管理员。",
+      announcementEnabled: (read("announcementEnabled") ?? "false") === "true",
+      ...(read("announcementTitle") ? { announcementTitle: read("announcementTitle") } : {}),
+      ...(read("announcementBody") ? { announcementBody: read("announcementBody") } : {}),
     };
     return this.#configCache;
   }
@@ -234,6 +329,10 @@ export class PlatformStore {
     if (patch.defaultRole !== undefined) set("defaultRole", patch.defaultRole);
     if (patch.pendingNotice !== undefined) set("pendingNotice", patch.pendingNotice);
     if (patch.loginNotice !== undefined) set("loginNotice", patch.loginNotice);
+    if (patch.announcementEnabled !== undefined)
+      set("announcementEnabled", String(patch.announcementEnabled));
+    if (patch.announcementTitle !== undefined) set("announcementTitle", patch.announcementTitle);
+    if (patch.announcementBody !== undefined) set("announcementBody", patch.announcementBody);
     this.#configCache = undefined;
     return this.getConfig();
   }
@@ -787,6 +886,332 @@ export class PlatformStore {
       .run(token);
   }
 
+  // ================= 提示词库（个人 + 全局，OpenWebUI Prompts 同位功能） =================
+
+  listPrompts(viewer: PlatformUser): PlatformPrompt[] {
+    const rows = (
+      this.#db
+        .prepare(
+          "SELECT p.*, u.username AS owner_username FROM prompts p LEFT JOIN users u ON u.id = p.owner_id WHERE p.owner_id IS NULL OR p.owner_id = ? ORDER BY p.updated_at DESC",
+        )
+        .all(viewer.id) as Array<{
+        id: string;
+        owner_id: string | null;
+        owner_username: string | null;
+        title: string;
+        content: string;
+        created_at: number;
+        updated_at: number;
+      }>
+    ).map((row) => ({
+      id: row.id,
+      ...(row.owner_id ? { ownerId: row.owner_id } : {}),
+      ...(row.owner_username ? { ownerUsername: row.owner_username } : {}),
+      title: row.title,
+      content: row.content,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    }));
+    return rows;
+  }
+
+  createPrompt(input: { ownerId?: string; title: string; content: string }): PlatformPrompt {
+    const id = `p_${randomBytes(9).toString("hex")}`;
+    const now = Date.now();
+    this.#db
+      .prepare(
+        "INSERT INTO prompts (id, owner_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(id, input.ownerId ?? null, input.title, input.content, now, now);
+    return this.#getPromptOrThrow(id);
+  }
+
+  updatePrompt(
+    id: string,
+    viewer: PlatformUser,
+    patch: { title?: string; content?: string },
+  ): PlatformPrompt {
+    const existing = this.#db.prepare("SELECT * FROM prompts WHERE id = ?").get(id) as
+      | { id: string; owner_id: string | null }
+      | undefined;
+    if (!existing) throw new Error("提示词不存在");
+    if (existing.owner_id && existing.owner_id !== viewer.id && viewer.role !== "admin") {
+      throw new Error("无权修改他人的提示词");
+    }
+    this.#db
+      .prepare(
+        "UPDATE prompts SET title = ?, content = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(
+        patch.title ?? this.#getPromptTitle(id),
+        patch.content ?? this.#getPromptContent(id),
+        Date.now(),
+        id,
+      );
+    return this.#getPromptOrThrow(id);
+  }
+
+  deletePrompt(id: string, viewer: PlatformUser): void {
+    const existing = this.#db.prepare("SELECT owner_id FROM prompts WHERE id = ?").get(id) as
+      | { owner_id: string | null }
+      | undefined;
+    if (!existing) return;
+    if (existing.owner_id && existing.owner_id !== viewer.id && viewer.role !== "admin") {
+      throw new Error("无权删除他人的提示词");
+    }
+    this.#db.prepare("DELETE FROM prompts WHERE id = ?").run(id);
+  }
+
+  #getPromptTitle(id: string): string {
+    const row = this.#db.prepare("SELECT title FROM prompts WHERE id = ?").get(id) as
+      | { title: string }
+      | undefined;
+    return row?.title ?? "";
+  }
+
+  #getPromptContent(id: string): string {
+    const row = this.#db.prepare("SELECT content FROM prompts WHERE id = ?").get(id) as
+      | { content: string }
+      | undefined;
+    return row?.content ?? "";
+  }
+
+  #getPromptOrThrow(id: string): PlatformPrompt {
+    const row = this.#db
+      .prepare(
+        "SELECT p.*, u.username AS owner_username FROM prompts p LEFT JOIN users u ON u.id = p.owner_id WHERE p.id = ?",
+      )
+      .get(id) as
+      | {
+          id: string;
+          owner_id: string | null;
+          owner_username: string | null;
+          title: string;
+          content: string;
+          created_at: number;
+          updated_at: number;
+        }
+      | undefined;
+    if (!row) throw new Error("提示词不存在");
+    return {
+      id: row.id,
+      ...(row.owner_id ? { ownerId: row.owner_id } : {}),
+      ...(row.owner_username ? { ownerUsername: row.owner_username } : {}),
+      title: row.title,
+      content: row.content,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  // ================= 知识库（管理员维护，agent 经 MCP 检索） =================
+
+  createKbDoc(input: {
+    title: string;
+    filename?: string;
+    content: string;
+    ownerId?: string;
+  }): PlatformKbDoc {
+    const chunks = chunkDocument(input.content);
+    if (chunks.length === 0) throw new Error("文档内容为空");
+    const id = `kb_${randomBytes(9).toString("hex")}`;
+    const now = Date.now();
+    const insertDoc = this.#db.prepare(
+      "INSERT INTO kb_docs (id, title, filename, size, chunk_count, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    const insertChunk = this.#db.prepare(
+      "INSERT INTO kb_chunks (id, doc_id, ord, content) VALUES (?, ?, ?, ?)",
+    );
+    const insertFts = this.#ftsEnabled
+      ? this.#db.prepare("INSERT INTO kb_fts (content, doc_id) VALUES (?, ?)")
+      : null;
+    // node:sqlite（Node 24）无 transaction() 助手，用手动 BEGIN/COMMIT/ROLLBACK。
+    this.#db.exec("BEGIN");
+    try {
+      insertDoc.run(
+        id,
+        input.title,
+        input.filename ?? null,
+        input.content.length,
+        chunks.length,
+        input.ownerId ?? null,
+        now,
+      );
+      chunks.forEach((content, index) => {
+        const chunkId = `kbc_${randomBytes(8).toString("hex")}`;
+        insertChunk.run(chunkId, id, index, content);
+        insertFts?.run(content, id);
+      });
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+    return this.#getKbDocOrThrow(id);
+  }
+
+  listKbDocs(): PlatformKbDoc[] {
+    return (
+      this.#db.prepare("SELECT * FROM kb_docs ORDER BY created_at DESC").all() as Array<{
+        id: string;
+        title: string;
+        filename: string | null;
+        size: number;
+        chunk_count: number;
+        created_at: number;
+      }>
+    ).map((row) => ({
+      id: row.id,
+      title: row.title,
+      ...(row.filename ? { filename: row.filename } : {}),
+      size: Number(row.size),
+      chunkCount: Number(row.chunk_count),
+      createdAt: Number(row.created_at),
+    }));
+  }
+
+  deleteKbDoc(id: string): void {
+    this.#db.exec("BEGIN");
+    try {
+      if (this.#ftsEnabled) {
+        this.#db.prepare("DELETE FROM kb_fts WHERE doc_id = ?").run(id);
+      }
+      this.#db.prepare("DELETE FROM kb_chunks WHERE doc_id = ?").run(id);
+      this.#db.prepare("DELETE FROM kb_docs WHERE id = ?").run(id);
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  searchKb(query: string, limit = 6): PlatformKbHit[] {
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    if (this.#ftsEnabled) {
+      // FTS5 MATCH：把查询词按空白拆分后做 AND 组合，避免原始语法报错。
+      // 注意 unicode61 分词器对连续 CJK 文本切分粒度很粗，中文短词常命中 0 行，
+      // 因此 FTS 无命中时必须继续走 LIKE 兜底，而不是直接返回空。
+      const matchQuery = trimmed
+        .split(/\s+/)
+        .map((token) => `"${token.replace(/"/g, "")}"`)
+        .join(" AND ");
+      try {
+        const rows = this.#db
+          .prepare(
+            "SELECT d.id AS doc_id, d.title AS doc_title, snippet(kb_fts, 0, '…', '…', '…', 12) AS snip FROM kb_fts JOIN kb_docs d ON d.id = kb_fts.doc_id WHERE kb_fts MATCH ? LIMIT ?",
+          )
+          .all(matchQuery, limit) as Array<{
+          doc_id: string;
+          doc_title: string;
+          snip: string;
+        }>;
+        if (rows.length > 0) {
+          return rows.map((row) => ({ docId: row.doc_id, docTitle: row.doc_title, snippet: row.snip }));
+        }
+      } catch {
+        // MATCH 语法不兼容时回退 LIKE。
+      }
+    }
+    const like = `%${trimmed.replace(/[%_]/g, " ")}%`;
+    const rows = this.#db
+      .prepare(
+        "SELECT DISTINCT d.id AS doc_id, d.title AS doc_title, c.content AS content FROM kb_chunks c JOIN kb_docs d ON d.id = c.doc_id WHERE c.content LIKE ? LIMIT ?",
+      )
+      .all(like, limit) as Array<{ doc_id: string; doc_title: string; content: string }>;
+    return rows.map((row) => ({
+      docId: row.doc_id,
+      docTitle: row.doc_title,
+      snippet: row.content.slice(0, 240),
+    }));
+  }
+
+  #getKbDocOrThrow(id: string): PlatformKbDoc {
+    const row = this.#db.prepare("SELECT * FROM kb_docs WHERE id = ?").get(id) as
+      | {
+          id: string;
+          title: string;
+          filename: string | null;
+          size: number;
+          chunk_count: number;
+          created_at: number;
+        }
+      | undefined;
+    if (!row) throw new Error("文档不存在");
+    return {
+      id: row.id,
+      title: row.title,
+      ...(row.filename ? { filename: row.filename } : {}),
+      size: Number(row.size),
+      chunkCount: Number(row.chunk_count),
+      createdAt: Number(row.created_at),
+    };
+  }
+
+  // ================= 审计事件与用量统计 =================
+
+  recordEvent(type: string, user?: PlatformUser, detail?: string): void {
+    try {
+      this.#db
+        .prepare("INSERT INTO events (type, user_id, username, detail, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(type, user?.id ?? null, user?.username ?? null, detail ?? null, Date.now());
+      // 审计表软上限：保留最近 10000 条，防止无限膨胀。
+      this.#db
+        .prepare(
+          "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 10000)",
+        )
+        .run();
+    } catch {
+      // 审计记录失败不影响主流程。
+    }
+  }
+
+  listEvents(options: { type?: string; limit?: number }): PlatformEvent[] {
+    const limit = Math.min(500, Math.max(1, options.limit ?? 100));
+    const rows = (
+      options.type
+        ? this.#db
+            .prepare(
+              "SELECT * FROM events WHERE type = ? ORDER BY id DESC LIMIT ?",
+            )
+            .all(options.type, limit)
+        : this.#db.prepare("SELECT * FROM events ORDER BY id DESC LIMIT ?").all(limit)
+    ) as Array<{
+      id: number;
+      type: string;
+      user_id: string | null;
+      username: string | null;
+      detail: string | null;
+      created_at: number;
+    }>;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      type: row.type,
+      ...(row.user_id ? { userId: row.user_id } : {}),
+      ...(row.username ? { username: row.username } : {}),
+      ...(row.detail ? { detail: row.detail } : {}),
+      createdAt: Number(row.created_at),
+    }));
+  }
+
+  getStats(): PlatformStats {
+    const count = (sql: string, ...params: Array<string | number>): number => {
+      const row = this.#db.prepare(sql).get(...params) as { n: number } | undefined;
+      return Number(row?.n ?? 0);
+    };
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return {
+      users: count("SELECT COUNT(*) AS n FROM users"),
+      pendingUsers: count("SELECT COUNT(*) AS n FROM users WHERE role = 'pending'"),
+      activeSessions: count("SELECT COUNT(*) AS n FROM sessions WHERE expires_at > ?", Date.now()),
+      shares: count("SELECT COUNT(*) AS n FROM shares"),
+      prompts: count("SELECT COUNT(*) AS n FROM prompts"),
+      kbDocs: count("SELECT COUNT(*) AS n FROM kb_docs"),
+      logins24h: count("SELECT COUNT(*) AS n FROM events WHERE type = 'auth.login' AND created_at > ?", dayAgo),
+      searches24h: count("SELECT COUNT(*) AS n FROM events WHERE type = 'search.query' AND created_at > ?", dayAgo),
+    };
+  }
+
   // ================= 内部工具 =================
 
   #safeJson<T>(text: string, fallback: T): T {
@@ -815,3 +1240,38 @@ export class PlatformStore {
 }
 
 export const PASSWORD_MIN = PASSWORD_MIN_LENGTH;
+
+/**
+ * 文档分块：优先按空行分段，超长段落再按固定窗口切分（带少量重叠），
+ * 保证每个 chunk 落在 200~800 字符之间，适配 FTS5 关键词检索粒度。
+ */
+export function chunkDocument(content: string, maxChars = 800): string[] {
+  const normalized = content.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+  const paragraphs = normalized.split(/\n{2,}/);
+  const chunks: string[] = [];
+  let current = "";
+  const pushCurrent = (): void => {
+    const trimmed = current.trim();
+    if (trimmed) chunks.push(trimmed);
+    current = "";
+  };
+  for (const paragraph of paragraphs) {
+    const piece = paragraph.trim();
+    if (!piece) continue;
+    if (piece.length > maxChars) {
+      pushCurrent();
+      const step = Math.max(400, Math.floor(maxChars * 0.8));
+      for (let start = 0; start < piece.length; start += step) {
+        const window = piece.slice(start, start + maxChars).trim();
+        if (window) chunks.push(window);
+        if (start + maxChars >= piece.length) break;
+      }
+      continue;
+    }
+    if ((current + "\n\n" + piece).trim().length > maxChars) pushCurrent();
+    current = current ? `${current}\n\n${piece}` : piece;
+  }
+  pushCurrent();
+  return chunks;
+}

@@ -9,7 +9,7 @@ import { PlatformStore } from "./platform/store.js";
 import { SearchService } from "./platform/search.js";
 import { ZcodeDataSnapshotReader } from "./platform/snapshot.js";
 import { createRemoteBrowserExecutor, type RemoteBrowserExecutor } from "@zcode/browser-remote";
-import { registerPlatformSearchMcpServer } from "./platform/mcpRegistration.js";
+import { registerPlatformMcpServers } from "./platform/mcpRegistration.js";
 
 async function main(): Promise<void> {
   const configDir = getAppConfigDir();
@@ -60,9 +60,8 @@ async function main(): Promise<void> {
   }
 
   // 搜索 MCP server 注册（agent 工具接入）：写入 mcp.json 的 platform-web-search 条目。
-  await registerPlatformSearchMcpServer({
+  await registerPlatformMcpServers({
     configDir,
-    port,
     ...(serviceToken ? { serviceToken } : {}),
     enabled: process.env["ZCODE_PLATFORM_SEARCH_MCP"]?.trim() !== "0",
   });

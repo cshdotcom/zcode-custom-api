@@ -46,6 +46,18 @@ export interface PlatformSectionCopy {
   saveAction: string;
   savingAction: string;
   loadFailed: string;
+  promptsTitle: string;
+  promptsDescription: string;
+  promptEmpty: string;
+  createPromptAction: string;
+  promptTitleLabel: string;
+  promptContentLabel: string;
+  promptGlobalToggle: string;
+  promptGlobalBadge: string;
+  promptCopied: string;
+  promptSaved: string;
+  confirmDeletePrompt: string;
+  editAction: string;
 }
 
 export interface PlatformAdminSectionCopy extends PlatformSectionCopy {
@@ -131,6 +143,39 @@ export interface PlatformAdminSectionCopy extends PlatformSectionCopy {
   browserProbeAction: string;
   browserConnected: string;
   browserDisconnected: string;
+  tabKnowledge: string;
+  tabUsage: string;
+  kbTitle: string;
+  kbDescription: string;
+  kbEmpty: string;
+  kbUploadAction: string;
+  kbDocTitleLabel: string;
+  kbFilenameLabel: string;
+  kbContentLabel: string;
+  kbContentHint: string;
+  kbUploaded: string;
+  kbDeleteConfirm: string;
+  colSize: string;
+  colChunks: string;
+  usageTitle: string;
+  usageDescription: string;
+  statUsers: string;
+  statPending: string;
+  statSessions: string;
+  statShares: string;
+  statPrompts: string;
+  statKbDocs: string;
+  statLogins24h: string;
+  statSearches24h: string;
+  auditTitle: string;
+  auditDescription: string;
+  auditEmpty: string;
+  auditFilterAll: string;
+  colEvent: string;
+  colDetail: string;
+  configAnnouncementEnabled: string;
+  configAnnouncementTitle: string;
+  configAnnouncementBody: string;
 }
 
 const PLATFORM_SECTION_COPY = {
@@ -176,6 +221,18 @@ const PLATFORM_SECTION_COPY = {
     saveAction: "保存",
     savingAction: "保存中…",
     loadFailed: "加载失败",
+    promptsTitle: "提示词库",
+    promptsDescription: "个人与全平台的提示词模板，复制后粘贴到任务输入框即可使用。",
+    promptEmpty: "还没有提示词。点击「新建提示词」创建第一条模板。",
+    createPromptAction: "新建提示词",
+    promptTitleLabel: "标题",
+    promptContentLabel: "内容",
+    promptGlobalToggle: "设为全局（所有用户可见，仅管理员）",
+    promptGlobalBadge: "全局",
+    promptCopied: "已复制到剪贴板",
+    promptSaved: "已保存",
+    confirmDeletePrompt: "确认删除该提示词？",
+    editAction: "编辑",
   },
   "en-US": {
     platformDisabledHint:
@@ -219,6 +276,18 @@ const PLATFORM_SECTION_COPY = {
     saveAction: "Save",
     savingAction: "Saving…",
     loadFailed: "Failed to load",
+    promptsTitle: "Prompt Library",
+    promptsDescription: "Personal and platform-wide prompt templates. Copy and paste into the task composer.",
+    promptEmpty: "No prompts yet. Create your first template.",
+    createPromptAction: "New Prompt",
+    promptTitleLabel: "Title",
+    promptContentLabel: "Content",
+    promptGlobalToggle: "Make global (visible to all users, admin only)",
+    promptGlobalBadge: "Global",
+    promptCopied: "Copied to clipboard",
+    promptSaved: "Saved",
+    confirmDeletePrompt: "Delete this prompt?",
+    editAction: "Edit",
   },
 } as const;
 
@@ -306,6 +375,39 @@ const ADMIN_EXTRA_COPY = {
     browserProbeAction: "探测连通性",
     browserConnected: "已连接",
     browserDisconnected: "未连接",
+    tabKnowledge: "知识库",
+    tabUsage: "用量/审计",
+    kbTitle: "平台知识库",
+    kbDescription: "管理员上传私有文档（txt/md/代码等文本），Agent 通过 search_knowledge 工具自动检索引用。",
+    kbEmpty: "知识库为空。上传第一份文档让 Agent 获得私有知识。",
+    kbUploadAction: "上传文档",
+    kbDocTitleLabel: "文档标题",
+    kbFilenameLabel: "文件名（可选）",
+    kbContentLabel: "文档内容",
+    kbContentHint: "支持粘贴任意文本（Markdown/纯文本/代码），空行分段会被用作检索分块边界。",
+    kbUploaded: "文档已入库并建立全文索引",
+    kbDeleteConfirm: "确认删除该文档？其全文索引将一并移除。",
+    colSize: "大小",
+    colChunks: "分块",
+    usageTitle: "平台用量",
+    usageDescription: "近 24 小时与全量资源统计。",
+    statUsers: "用户总数",
+    statPending: "待审批",
+    statSessions: "活跃会话",
+    statShares: "分享总数",
+    statPrompts: "提示词",
+    statKbDocs: "知识文档",
+    statLogins24h: "24h 登录",
+    statSearches24h: "24h 搜索",
+    auditTitle: "审计日志",
+    auditDescription: "登录、分享、搜索与内容变更的完整审计轨迹（保留最近 10000 条）。",
+    auditEmpty: "暂无事件。",
+    auditFilterAll: "全部",
+    colEvent: "事件",
+    colDetail: "详情",
+    configAnnouncementEnabled: "启用工作台公告横幅",
+    configAnnouncementTitle: "公告标题",
+    configAnnouncementBody: "公告内容",
   },
   "en-US": {
     tabUsers: "Users",
@@ -390,8 +492,62 @@ const ADMIN_EXTRA_COPY = {
     browserProbeAction: "Probe",
     browserConnected: "Connected",
     browserDisconnected: "Disconnected",
+    tabKnowledge: "Knowledge",
+    tabUsage: "Usage & Audit",
+    kbTitle: "Platform Knowledge Base",
+    kbDescription: "Admin-uploaded documents (txt/md/code). Agents retrieve them via the search_knowledge tool.",
+    kbEmpty: "Knowledge base is empty. Upload the first document to ground your agents.",
+    kbUploadAction: "Upload Document",
+    kbDocTitleLabel: "Title",
+    kbFilenameLabel: "Filename (optional)",
+    kbContentLabel: "Content",
+    kbContentHint: "Paste any text (Markdown/plain/code). Blank-line paragraphs are used as chunk boundaries for retrieval.",
+    kbUploaded: "Document indexed",
+    kbDeleteConfirm: "Delete this document? Its full-text index is removed too.",
+    colSize: "Size",
+    colChunks: "Chunks",
+    usageTitle: "Platform Usage",
+    usageDescription: "Last-24h and all-time resource statistics.",
+    statUsers: "Users",
+    statPending: "Pending",
+    statSessions: "Active Sessions",
+    statShares: "Shares",
+    statPrompts: "Prompts",
+    statKbDocs: "KB Documents",
+    statLogins24h: "Logins (24h)",
+    statSearches24h: "Searches (24h)",
+    auditTitle: "Audit Log",
+    auditDescription: "Full audit trail of sign-ins, shares, searches and content changes (last 10000 kept).",
+    auditEmpty: "No events yet.",
+    auditFilterAll: "All",
+    colEvent: "Event",
+    colDetail: "Detail",
+    configAnnouncementEnabled: "Show workbench announcement banner",
+    configAnnouncementTitle: "Announcement title",
+    configAnnouncementBody: "Announcement body",
   },
 } as const;
+
+/** 审计事件类型的中英文标签（未知类型回退原始 type）。 */
+export function platformEventLabel(type: string, locale?: string): string {
+  const zh = locale !== undefined ? resolvePlatformLocale(locale) === "zh-CN" : true;
+  const labels: Record<string, [string, string]> = {
+    "auth.setup_admin": ["初始化管理员", "Admin setup"],
+    "auth.register": ["注册", "Sign up"],
+    "auth.register_failed": ["注册失败", "Sign-up failed"],
+    "auth.login": ["登录", "Sign in"],
+    "auth.login_failed": ["登录失败", "Sign-in failed"],
+    "auth.logout": ["登出", "Sign out"],
+    "share.create": ["创建分享", "Share created"],
+    "search.query": ["联网搜索", "Web search"],
+    "prompt.create": ["新建提示词", "Prompt created"],
+    "kb.create": ["上传知识文档", "KB doc uploaded"],
+    "kb.delete": ["删除知识文档", "KB doc deleted"],
+  };
+  const entry = labels[type];
+  if (!entry) return type;
+  return zh ? entry[0] : entry[1];
+}
 
 function resolvePlatformLocale(language?: string): PlatformLocale {
   const candidate = language ?? document.documentElement.lang ?? navigator.language ?? "";

@@ -4,12 +4,14 @@ import { Badge } from "@/components/ui/badge.js";
 import { Input } from "@/components/ui/input.js";
 import { Switch } from "@/components/ui/switch.js";
 import { Spinner } from "@/components/ui/spinner.js";
+import { Textarea } from "@/components/ui/textarea.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { usePlatformUser } from "@/platformUserStore.js";
 import {
   PlatformApiError,
   platformApi,
   platformApiDelete,
+  type PlatformPromptRow,
   type PlatformShareRow,
 } from "./platformApi.js";
 import { getPlatformSectionCopy } from "./platformLocale.js";
@@ -343,6 +345,219 @@ export function PlatformSection() {
           </div>
         )}
       </section>
+
+      {/* 提示词库 */}
+      <PromptsSection />
     </div>
+  );
+}
+
+function PromptsSection(): React.ReactElement {
+  const { intl } = useZCodeIntl();
+  const copy = getPlatformSectionCopy(intl.locale);
+  const platformUser = usePlatformUser();
+  const isAdmin = platformUser?.role === "admin";
+
+  const [prompts, setPrompts] = useState<PlatformPromptRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [isGlobal, setIsGlobal] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      const data = await platformApi<{ prompts: PlatformPromptRow[] }>("/api/platform/prompts");
+      setPrompts(data.prompts);
+    } catch (requestError) {
+      setPrompts([]);
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!platformUser) return;
+    void load();
+  }, [platformUser, load]);
+
+  if (!platformUser) return <></>;
+
+  const openCreate = (): void => {
+    setEditingId(null);
+    setTitle("");
+    setContent("");
+    setIsGlobal(false);
+    setCreateOpen(true);
+  };
+
+  const openEdit = (prompt: PlatformPromptRow): void => {
+    setEditingId(prompt.id);
+    setTitle(prompt.title);
+    setContent(prompt.content);
+    setIsGlobal(!prompt.ownerId);
+    setCreateOpen(true);
+  };
+
+  const submit = async (): Promise<void> => {
+    if (!title.trim() || !content.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (editingId) {
+        await platformApi(`/api/platform/prompts/${editingId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ title, content }),
+        });
+      } else {
+        await platformApi("/api/platform/prompts", {
+          method: "POST",
+          body: JSON.stringify({ title, content, global: isGlobal && isAdmin }),
+        });
+      }
+      setCreateOpen(false);
+      setHint(copy.promptSaved);
+      await load();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string): Promise<void> => {
+    setBusyId(id);
+    setError(null);
+    try {
+      await platformApiDelete(`/api/platform/prompts/${id}`);
+      setConfirmId(null);
+      await load();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const copyContent = async (prompt: PlatformPromptRow): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(prompt.content);
+      setHint(copy.promptCopied);
+    } catch {
+      window.prompt(copy.promptTitleLabel, prompt.content);
+    }
+  };
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-card">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-ui-base font-semibold text-foreground">{copy.promptsTitle}</div>
+          <div className="mt-0.5 text-ui-xs text-foreground-subtle">{copy.promptsDescription}</div>
+        </div>
+        <div className="flex items-center gap-3">
+          {hint ? <span className="text-ui-xs text-foreground-subtle">{hint}</span> : null}
+          <Button size="sm" onClick={openCreate}>
+            {copy.createPromptAction}
+          </Button>
+        </div>
+      </header>
+      {error ? (
+        <div className="border-b border-border px-4 py-2 text-ui-xs text-destructive">{error}</div>
+      ) : null}
+      {createOpen ? (
+        <div className="grid gap-3 border-b border-border px-4 py-4">
+          <Input
+            size="lg"
+            placeholder={copy.promptTitleLabel}
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+          <Textarea
+            rows={5}
+            placeholder={copy.promptContentLabel}
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+          />
+          {isAdmin ? (
+            <label className="flex items-center gap-2 text-ui-sm text-foreground-subtle">
+              <Switch size="sm" checked={isGlobal} onCheckedChange={setIsGlobal} />
+              {copy.promptGlobalToggle}
+            </label>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setCreateOpen(false)}>
+              {copy.cancelAction}
+            </Button>
+            <Button size="sm" disabled={busy || !title.trim() || !content.trim()} onClick={() => void submit()}>
+              {busy ? copy.savingAction : copy.saveAction}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {prompts === null ? (
+        <div className="flex items-center justify-center px-4 py-10 text-foreground-subtle">
+          <Spinner className="size-5" />
+        </div>
+      ) : prompts.length === 0 ? (
+        <div className="px-4 py-8 text-center text-ui-sm text-foreground-subtle">{copy.promptEmpty}</div>
+      ) : (
+        <div className="divide-y divide-border">
+          {prompts.map((prompt) => (
+            <div key={prompt.id} className="px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-ui-sm font-medium text-foreground">{prompt.title}</span>
+                  {!prompt.ownerId ? <Badge variant="secondary">{copy.promptGlobalBadge}</Badge> : null}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button size="xs" variant="ghost" onClick={() => void copyContent(prompt)}>
+                    {copy.copyLinkAction}
+                  </Button>
+                  {!prompt.ownerId || prompt.ownerId === platformUser.id || isAdmin ? (
+                    <Button size="xs" variant="ghost" onClick={() => openEdit(prompt)}>
+                      {copy.editAction}
+                    </Button>
+                  ) : null}
+                  {prompt.ownerId === platformUser.id || isAdmin ? (
+                    confirmId === prompt.id ? (
+                      <>
+                        <Button
+                          size="xs"
+                          variant="destructive"
+                          disabled={busyId === prompt.id}
+                          onClick={() => void remove(prompt.id)}
+                        >
+                          {copy.yesAction}
+                        </Button>
+                        <Button size="xs" variant="ghost" onClick={() => setConfirmId(null)}>
+                          {copy.cancelAction}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        className="text-destructive"
+                        onClick={() => setConfirmId(prompt.id)}
+                      >
+                        {copy.deleteAction}
+                      </Button>
+                    )
+                  ) : null}
+                </div>
+              </div>
+              <pre className="mt-2 max-h-24 overflow-y-auto whitespace-pre-wrap rounded-lg bg-surface px-3 py-2 text-ui-xs text-foreground-subtle">
+                {prompt.content}
+              </pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

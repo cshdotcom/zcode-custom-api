@@ -55,6 +55,9 @@ export interface PlatformSystemConfig {
   defaultRole: "user" | "pending";
   loginNotice: string;
   pendingNotice: string;
+  announcementEnabled: boolean;
+  announcementTitle: string;
+  announcementBody: string;
 }
 
 export interface PlatformSearchConfig {
@@ -72,6 +75,45 @@ export interface PlatformBrowserStatus {
   mode?: string;
   connected?: boolean;
   detail?: string;
+}
+
+export interface PlatformPromptRow {
+  id: string;
+  ownerId?: string;
+  ownerUsername?: string;
+  title: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PlatformKbDocRow {
+  id: string;
+  title: string;
+  filename?: string;
+  size: number;
+  chunkCount: number;
+  createdAt: number;
+}
+
+export interface PlatformStatsRow {
+  users: number;
+  pendingUsers: number;
+  activeSessions: number;
+  shares: number;
+  prompts: number;
+  kbDocs: number;
+  logins24h: number;
+  searches24h: number;
+}
+
+export interface PlatformEventRow {
+  id: number;
+  type: string;
+  userId?: string;
+  username?: string;
+  detail?: string;
+  createdAt: number;
 }
 
 export class PlatformApiError extends Error {

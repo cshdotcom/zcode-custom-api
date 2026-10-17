@@ -83,10 +83,17 @@ export function createPlatformAuthMiddleware(deps: PlatformDeps) {
       INVITE_VALIDATE_RE.test(pathname);
     // 对外搜索端点（OpenWebUI / MCP server 接入）有独立的 Token 校验，不走平台会话强制鉴权。
     const isPublicSearch = pathname === "/search" || pathname === "/api/platform/search";
+    // 内部服务令牌（MCP server 等）可访问知识库检索端点；路由内会再校验令牌本身。
+    const isServiceKbSearch =
+      pathname === "/api/platform/kb/search" &&
+      Boolean(
+        deps.serviceToken &&
+          bearerFromRequest(c) === deps.serviceToken,
+      );
     // 无论是否强制鉴权，都先解析会话（/me、搜索 API、公共端点在已登录时需要 platformUser）。
     const user = sessionFromRequest(c, deps.store);
     if (user) c.set("platformUser", user);
-    if (isAuthPath || isLoginHtml || isHealth || isPublicSearch || isPublicShare) {
+    if (isAuthPath || isLoginHtml || isHealth || isPublicSearch || isPublicShare || isServiceKbSearch) {
       await next();
       return;
     }
@@ -199,6 +206,7 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
         store.consumeInvite(inviteCode);
       }
       const session = store.createSession(user.id);
+      store.recordEvent(isFirstUser ? "auth.setup_admin" : "auth.register", user);
       setSessionCookie(c, session.token);
       return c.json({
         ok: true,
@@ -207,6 +215,7 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
         ...(user.role === "pending" ? { pendingNotice: config.pendingNotice } : {}),
       });
     } catch (error) {
+      store.recordEvent("auth.register_failed", undefined, username);
       return jsonError(c, error instanceof Error ? error.message : String(error));
     }
   });
@@ -219,8 +228,12 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
     const password = String(body.password ?? "");
     try {
       const user = store.verifyLogin(username, password);
-      if (!user) return jsonError(c, "用户名或密码错误", 401);
+      if (!user) {
+        store.recordEvent("auth.login_failed", undefined, username);
+        return jsonError(c, "用户名或密码错误", 401);
+      }
       const session = store.createSession(user.id);
+      store.recordEvent("auth.login", user);
       setSessionCookie(c, session.token);
       return c.json({
         ok: true,
@@ -239,7 +252,9 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
     if (store instanceof Response) return store;
     const cookies = parseCookieHeader(c.req.header("cookie"));
     const token = cookies.get(PLATFORM_SESSION_COOKIE);
+    const logoutUser = token ? store.getSession(token)?.user : undefined;
     if (token) store.deleteSession(token);
+    if (logoutUser) store.recordEvent("auth.logout", logoutUser);
     c.header("Set-Cookie", `${PLATFORM_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
     return c.json({ ok: true });
   });
@@ -310,6 +325,15 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
           : {}),
         ...(body.loginNotice !== undefined ? { loginNotice: String(body.loginNotice) } : {}),
         ...(body.pendingNotice !== undefined ? { pendingNotice: String(body.pendingNotice) } : {}),
+        ...(body.announcementEnabled !== undefined
+          ? { announcementEnabled: Boolean(body.announcementEnabled) }
+          : {}),
+        ...(body.announcementTitle !== undefined
+          ? { announcementTitle: String(body.announcementTitle) }
+          : {}),
+        ...(body.announcementBody !== undefined
+          ? { announcementBody: String(body.announcementBody) }
+          : {}),
       }),
     );
   });
@@ -580,6 +604,7 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
         ownerId: user.id,
         snapshot,
       });
+      store.recordEvent("share.create", user, `${resourceType}: ${title}`);
       return c.json({ ok: true, url: `/s/${share.token}`, share: { ...share, snapshot: undefined } });
     } catch (error) {
       return jsonError(c, error instanceof Error ? error.message : String(error));
@@ -703,6 +728,8 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
     if (!searchAuth(c)) return jsonError(c, "Unauthorized", 401);
     const query = c.req.query("q") ?? c.req.query("query") ?? "";
     const count = Number(c.req.query("count") ?? "") || undefined;
+    const searchUser = c.get("platformUser") as PlatformUser | undefined;
+    if (searchUser) deps.store?.recordEvent("search.query", searchUser, query.slice(0, 200));
     try {
       const results = await search.search(query, count);
       return c.json({ query, count: results.length, results });
@@ -759,6 +786,164 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
     } catch {
       return c.json([]);
     }
+  });
+
+  // ---------- 提示词库（个人 + 管理员全局） ----------
+  // 工作台公告横幅：任何活跃会话用户可读（pending 亦允许，便于展示站点通知）。
+  app.get("/api/platform/announcement", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    const config = store.getConfig();
+    return c.json({
+      enabled: config.announcementEnabled && Boolean(config.announcementTitle || config.announcementBody),
+      title: config.announcementTitle ?? "",
+      body: config.announcementBody ?? "",
+    });
+  });
+
+  app.get("/api/platform/prompts", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    if (user.role === "pending") return jsonError(c, "账号待审批", 403);
+    return c.json({ prompts: store.listPrompts(user) });
+  });
+
+  app.post("/api/platform/prompts", async (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    if (user.role === "pending") return jsonError(c, "账号待审批", 403);
+    if (user.role !== "admin" && !store.hasPermission(user, "workspace.prompts")) {
+      return jsonError(c, "没有提示词库权限（workspace.prompts）", 403);
+    }
+    const body = await readJson(c);
+    const title = String(body.title ?? "").trim();
+    const content = String(body.content ?? "");
+    if (!title) return jsonError(c, "标题不能为空");
+    if (!content.trim()) return jsonError(c, "内容不能为空");
+    const isGlobal = body.global === true && user.role === "admin";
+    const prompt = store.createPrompt({
+      ...(isGlobal ? {} : { ownerId: user.id }),
+      title: title.slice(0, 200),
+      content: content.slice(0, 32_000),
+    });
+    store.recordEvent("prompt.create", user, title);
+    return c.json({ prompt });
+  });
+
+  app.patch("/api/platform/prompts/:id", async (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    const body = await readJson(c);
+    try {
+      const prompt = store.updatePrompt(c.req.param("id"), user, {
+        ...(body.title !== undefined ? { title: String(body.title).slice(0, 200) } : {}),
+        ...(body.content !== undefined ? { content: String(body.content).slice(0, 32_000) } : {}),
+      });
+      return c.json({ prompt });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  app.delete("/api/platform/prompts/:id", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    try {
+      store.deletePrompt(c.req.param("id"), user);
+      return c.json({ ok: true });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  // ---------- 知识库（管理员维护；agent 经 platform-knowledge MCP 检索） ----------
+  app.get("/api/platform/kb", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const _admin = requireAdmin(c);
+    if (_admin instanceof Response) return _admin;
+    return c.json({ docs: store.listKbDocs() });
+  });
+
+  app.post("/api/platform/kb", async (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const admin = requireAdmin(c);
+    if (admin instanceof Response) return admin;
+    const body = await readJson(c);
+    const title = String(body.title ?? "").trim();
+    const content = String(body.content ?? "");
+    const filename = body.filename ? String(body.filename).slice(0, 260) : undefined;
+    if (!title) return jsonError(c, "标题不能为空");
+    if (!content.trim()) return jsonError(c, "内容不能为空");
+    if (content.length > 4_000_000) return jsonError(c, "文档过大（上限 4MB 文本）", 413);
+    try {
+      const doc = store.createKbDoc({
+        title: title.slice(0, 200),
+        ...(filename ? { filename } : {}),
+        content,
+        ownerId: admin.id,
+      });
+      store.recordEvent("kb.create", admin, title);
+      return c.json({ doc });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  app.delete("/api/platform/kb/:id", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const admin = requireAdmin(c);
+    if (admin instanceof Response) return admin;
+    store.deleteKbDoc(c.req.param("id"));
+    store.recordEvent("kb.delete", admin, c.req.param("id"));
+    return c.json({ ok: true });
+  });
+
+  // 知识库检索：会话用户或内部服务令牌（MCP server 用）。
+  app.get("/api/platform/kb/search", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    const bearer = bearerFromRequest(c);
+    const authorized =
+      user?.role === "user" ||
+      user?.role === "admin" ||
+      (deps.serviceToken && bearer === deps.serviceToken);
+    if (!authorized) return jsonError(c, "Unauthorized", 401);
+    const query = c.req.query("q") ?? c.req.query("query") ?? "";
+    const limit = Number(c.req.query("limit") ?? "") || undefined;
+    return c.json({ hits: store.searchKb(query, limit) });
+  });
+
+  // ---------- 用量统计与审计日志（管理员） ----------
+  app.get("/api/platform/admin/stats", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const _admin = requireAdmin(c);
+    if (_admin instanceof Response) return _admin;
+    return c.json(store.getStats());
+  });
+
+  app.get("/api/platform/admin/events", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const _admin = requireAdmin(c);
+    if (_admin instanceof Response) return _admin;
+    const type = c.req.query("type") || undefined;
+    const limit = Number(c.req.query("limit") ?? "") || undefined;
+    return c.json({ events: store.listEvents({ ...(type ? { type } : {}), ...(limit ? { limit } : {}) }) });
   });
 
   // ---------- 浏览器桥状态 ----------

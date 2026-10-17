@@ -13,6 +13,7 @@ import {
   type RemoteTarget,
 } from "@zcode/shared";
 import { TooltipProvider } from "@/components/ui/tooltip.js";
+import { PlatformAnnouncementBanner } from "./platformAnnouncement.js";
 import { Button } from "@/components/ui/button.js";
 import { PlatformProvider } from "@/hooks/usePlatform.js";
 import { ServiceProvider } from "@/hooks/useServices.js";
@@ -261,6 +262,8 @@ export function Root(props: RootProps) {
                           <RequestSecurityHost />
                           <MarketingTouchProvider desktop={props.isDesktop === true}>
                             <RootInner {...props} />
+                            {/* 平台公告横幅（深度融合，自渲染固定层，不参与 Root 布局） */}
+                            {props.isDesktop !== true ? <PlatformAnnouncementBanner /> : null}
                           </MarketingTouchProvider>
                         </RewardsProvider>
                       </CodingPlanUpgradeDialogProvider>

@@ -86,6 +86,13 @@ export type {
   PlatformAuthConfig,
 } from "./platformUserStore.js";
 export { setPlatformAuthConfig, getPlatformAuthConfig } from "./platformUserStore.js";
+export {
+  setPlatformAnnouncement,
+  getPlatformAnnouncement,
+  usePlatformAnnouncement,
+} from "./platformUserStore.js";
+export type { PlatformAnnouncement } from "./platformUserStore.js";
+export { PlatformAnnouncementBanner } from "./platformAnnouncement.js";
 export { ResourceManagerApp } from "./resource-manager/ResourceManagerApp.js";
 export type {
   ResourceManagerAppProps,
