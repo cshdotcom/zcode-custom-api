@@ -1,0 +1,30 @@
+{
+  "name": "@zcode/browser-remote",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZCode Server 侧浏览器远程执行桥：把 agent 的 interaction/browserExecute 反向请求转发到远程 Playwright/CDP 浏览器容器（BrowserAmbientContextExecutor 实现）。",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --target node24 --clean",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@zcode/adapters": "workspace:*",
+    "@zcode/contracts": "workspace:*",
+    "@zcode/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0"
+  }
+}

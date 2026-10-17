@@ -43,6 +43,14 @@ import {
 } from "@zcode/shared";
 import { connectRemote, createRemoteBackend, type RemoteConnection } from "./remote/index.js";
 import { createHostCapabilityStore } from "./hostCapability.js";
+import {
+  createPlatformAuthMiddleware,
+  registerPlatformRoutes,
+  type PlatformDeps,
+} from "./platform/routes.js";
+import type { PlatformStore } from "./platform/store.js";
+import type { SearchService } from "./platform/search.js";
+import type { RemoteBrowserExecutor } from "@zcode/browser-remote";
 
 function wrapWebSocket(ws: WebSocket): ISocket {
   const onData = new Emitter<VSBuffer>();
@@ -152,6 +160,11 @@ export interface HttpServerOptions {
   spaFallback?: boolean;
   staticRoot?: string;
   workspaces?: ServerRemoteWorkspaceInfo[];
+  /**
+   * 平台层（自有用户/登录系统 + 联网搜索 + 远程浏览器桥状态 + 管理控制台）。
+   * authEnabled 时所有非认证路径都需要平台会话 Cookie。
+   */
+  platform?: PlatformDeps & { authEnabled: boolean };
 }
 
 function readTrimmedEnv(name: string): string | undefined {
@@ -315,6 +328,18 @@ export function createHttpServer(
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const hostCapabilities = createHostCapabilityStore();
+
+  // 平台鉴权中间件必须最先注册：自有用户系统取代官方登录的统一入口。
+  if (options.platform?.authEnabled) {
+    const platformDeps: PlatformDeps = {
+      store: options.platform.store,
+      search: options.platform.search,
+      ...(options.platform.browser ? { browser: options.platform.browser } : {}),
+      ...(options.platform.serviceToken ? { serviceToken: options.platform.serviceToken } : {}),
+    };
+    app.use("*", createPlatformAuthMiddleware(platformDeps));
+    registerPlatformRoutes(app, platformDeps);
+  }
 
   const authToken = options.authToken?.trim();
   if (authToken) {

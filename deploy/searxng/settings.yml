@@ -1,0 +1,12 @@
+# SearXNG 最小配置：开放 JSON 输出（ZCode 搜索插件 / OpenWebUI SearXNG 引擎依赖 format=json）
+use_default_settings: true
+
+server:
+  secret_key: "zcode-standalone-searxng-change-me"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json

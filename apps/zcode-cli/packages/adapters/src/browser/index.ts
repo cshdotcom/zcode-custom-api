@@ -21,9 +21,25 @@ import { executeManagedPageCommand } from "./page-command.js";
 import { abortError, classifyError, hasSideEffects, raceWithAbort } from "./request.js";
 import { ManagedCdpSession } from "./session.js";
 
+/**
+ * 远程浏览器 endpoint：连接已运行的 Chromium/Playwright 服务，而不是本地 launch。
+ * - mode "cdp"：任意 CDP 端点（chromium --remote-debugging-port、browserless/chromium 等），
+ *   走 chromium.connectOverCDP(endpoint)；endpoint 形如 ws://host:9222/ 或 ws://host:3000?token=...
+ * - mode "playwright"：Playwright run-server 协议端点（mcr.microsoft.com/playwright 容器
+ *   `npx playwright run-server --port 9222`），走 chromium.connect(endpoint)；
+ *   要求客户端 playwright-core 与服务端 Playwright 版本一致。
+ */
+export interface ManagedCdpRemoteEndpointOptions {
+  endpoint: string;
+  mode: "cdp" | "playwright";
+  connectTimeoutMs?: number;
+}
+
 export interface ManagedCdpBrowserRuntimeOptions extends BrowserExecutableResolutionOptions {
   closeTimeoutMs?: number;
   loadPlaywright?: () => Promise<PlaywrightChromiumModule>;
+  /** 配置后不再本地 launch Chromium，改为连接远程浏览器容器。 */
+  remote?: ManagedCdpRemoteEndpointOptions;
 }
 
 export interface ManagedCdpBrowserRuntime {
@@ -178,8 +194,18 @@ class ManagedCdpBrowserControlPort implements BrowserControlPort {
     }
   }
 
+  #descriptorOverrides(): import("./descriptor.js").ManagedCdpDescriptorOverrides | undefined {
+    const remote = this.#options.remote;
+    if (!remote) return undefined;
+    return {
+      name: remote.mode === "playwright" ? "ZCode Remote Chromium (Playwright)" : "ZCode Remote Chromium (CDP)",
+      launchMode: "remote",
+      provider: "zcode-remote-browser",
+    };
+  }
+
   private descriptor(): BrowserBackendDescriptor {
-    return createManagedCdpDescriptor(this.#browserId, this.#generation);
+    return createManagedCdpDescriptor(this.#browserId, this.#generation, this.#descriptorOverrides());
   }
 
   private async ensureBrowser(signal?: AbortSignal): Promise<Browser> {
@@ -196,21 +222,43 @@ class ManagedCdpBrowserControlPort implements BrowserControlPort {
           { cause: error },
         );
       }
-      const executablePath = resolveInstalledBrowserExecutable(playwright, this.#options);
+      const remote = this.#options.remote;
       let browser: Browser;
-      try {
-        browser = await playwright.chromium.launch({
-          executablePath,
-          headless: true,
-          args: ["--no-first-run", "--no-default-browser-check"],
-        });
-      } catch (error) {
-        // 底层 Playwright 错误可能包含临时 profile/CDP endpoint；对外只保留可操作分类，cause 供调试。
-        throw new Error(
-          "Managed headless Chromium is unavailable: launch failed. " +
-            "Verify the browser executable and OS sandbox/runtime dependencies.",
-          { cause: error },
-        );
+      if (remote) {
+        // 远程模式：连接已运行的浏览器服务（容器/远端主机），客户端不需要本地可执行文件。
+        const connectOptions = {
+          ...(remote.connectTimeoutMs !== undefined
+            ? { timeout: remote.connectTimeoutMs }
+            : {}),
+        };
+        try {
+          browser =
+            remote.mode === "playwright"
+              ? await playwright.chromium.connect(remote.endpoint, connectOptions)
+              : await playwright.chromium.connectOverCDP(remote.endpoint, connectOptions);
+        } catch (error) {
+          throw new Error(
+            `Managed remote Chromium is unavailable: failed to connect to ${remote.endpoint} (mode: ${remote.mode}). ` +
+              "Verify the remote browser service is running and reachable.",
+            { cause: error },
+          );
+        }
+      } else {
+        const executablePath = resolveInstalledBrowserExecutable(playwright, this.#options);
+        try {
+          browser = await playwright.chromium.launch({
+            executablePath,
+            headless: true,
+            args: ["--no-first-run", "--no-default-browser-check"],
+          });
+        } catch (error) {
+          // 底层 Playwright 错误可能包含临时 profile/CDP endpoint；对外只保留可操作分类，cause 供调试。
+          throw new Error(
+            "Managed headless Chromium is unavailable: launch failed. " +
+              "Verify the browser executable and OS sandbox/runtime dependencies.",
+            { cause: error },
+          );
+        }
       }
       if (this.#disposed) {
         await this.closeBrowserInstance(browser);
@@ -409,7 +457,15 @@ export function createManagedCdpBrowserRuntime(
 ): ManagedCdpBrowserRuntime {
   const normalizedOptions = {
     ...options,
-    executablePath: validateExplicitBrowserExecutable(options.executablePath, options.platform),
+    // 远程模式不需要本地浏览器可执行文件；仅在本地 launch 时校验。
+    ...(options.remote
+      ? {}
+      : {
+          executablePath: validateExplicitBrowserExecutable(
+            options.executablePath,
+            options.platform,
+          ),
+        }),
   };
   const port = new ManagedCdpBrowserControlPort(normalizedOptions);
   return {

@@ -1,0 +1,75 @@
+# =============================================================================
+# ZCode Standalone 一键启动
+#
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# 架构：浏览器 ZCode Web 前端 ↔ ZCode Server ↔ Playwright 远程浏览器容器
+#   - zcode     : ZCode Server（Web SPA 静态托管 + RPC + 平台层：自有用户系统/联网搜索/远程浏览器桥）
+#   - playwright: 远程 Chromium（Playwright run-server 协议），承载 agent 的浏览器自动化
+#   - searxng   : 可选自建搜索引擎（--profile search 启用），作为搜索插件的上游 Provider
+#
+# 启动后：
+#   http://localhost:3000/login     平台登录页（首个注册账号自动成为管理员）
+#   http://localhost:3000/platform/admin  管理控制台（用户管理/搜索配置/浏览器桥状态）
+#   http://localhost:3000/search    OpenWebUI 兼容搜索端点（GET=SearXNG 格式 / POST=external 格式）
+# =============================================================================
+
+services:
+  # ---------- 远程浏览器容器（必需） ----------
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.59.1-noble
+    # 与 server 内置 playwright-core@1.59.1 同版本，走 Playwright 协议连接
+    command: npx -y playwright@1.59.1 run-server --port 9222 --host 0.0.0.0
+    restart: unless-stopped
+    shm_size: 1gb
+    security_opt:
+      - seccomp:unconfined
+    # 健康检查：run-server 端口探测
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9222/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---------- 可选：自建 SearXNG 搜索引擎（--profile search 启用） ----------
+  searxng:
+    image: searxng/searxng:latest
+    profiles: ["search"]
+    restart: unless-stopped
+    volumes:
+      - ./searxng:/etc/searxng:ro
+    # 如需把 SearXNG 暴露给局域网其它系统（例如 OpenWebUI 直接用 SearXNG 引擎）取消注释：
+    # ports:
+    #   - "8080:8080"
+
+  # ---------- ZCode Server ----------
+  zcode:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # ----- 平台层 -----
+      ZCODE_PLATFORM_AUTH: "1" # 启用自有用户/登录系统（首个注册账号=管理员）
+      # 内部服务令牌：搜索 MCP server 访问 /api/platform/search 用，务必修改
+      ZCODE_PLATFORM_SERVICE_TOKEN: "${ZCODE_PLATFORM_SERVICE_TOKEN:-please-change-this-token}"
+      ZCODE_PLATFORM_SEARCH_MCP: "1" # 注册 web_search / fetch_page MCP 工具
+      # ----- 远程浏览器桥（替换桌面版 Electron CUA） -----
+      ZCODE_BROWSER_REMOTE_ENDPOINT: ws://playwright:9222/
+      ZCODE_BROWSER_REMOTE_MODE: playwright # playwright | cdp（cdp 可对接 browserless 等任意 CDP 端点）
+      # ----- 会话工作区 -----
+      ZCODE_SERVER_WORKSPACE: /workspace
+      PORT: "3000"
+    volumes:
+      # 持久化：用户库(users.db)、搜索配置(search.json)、MCP 配置、provider 配置与会话数据
+      - zcode-data:/root/.zcode
+      - zcode-workspace:/workspace
+    depends_on:
+      playwright:
+        condition: service_healthy
+
+volumes:
+  zcode-data:
+  zcode-workspace:

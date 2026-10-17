@@ -1,14 +1,22 @@
 import type { BrowserBackendDescriptor } from "@zcode/contracts";
 
+export interface ManagedCdpDescriptorOverrides {
+  name?: string;
+  launchMode?: string;
+  headless?: string;
+  provider?: string;
+}
+
 export function createManagedCdpDescriptor(
   browserId: string,
   generation: number,
+  overrides: ManagedCdpDescriptorOverrides = {},
 ): BrowserBackendDescriptor {
   return {
     id: browserId,
     generation,
     type: "cdp",
-    name: "ZCode Headless Chromium",
+    name: overrides.name ?? "ZCode Headless Chromium",
     capabilities: {
       browser: [],
       tab: [],
@@ -25,9 +33,9 @@ export function createManagedCdpDescriptor(
       "DomCUAAPI.downloadMedia": false,
     },
     metadata: {
-      provider: "zcode-cli",
-      launchMode: "managed",
-      headless: "true",
+      provider: overrides.provider ?? "zcode-cli",
+      launchMode: overrides.launchMode ?? "managed",
+      headless: overrides.headless ?? "true",
     },
   };
 }
