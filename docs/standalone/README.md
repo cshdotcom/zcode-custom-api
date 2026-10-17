@@ -1,4 +1,4 @@
-# ZCode Standalone：远程浏览器 CUA + 联网搜索插件 + 自有用户/登录系统
+# ZCode Standalone：远程浏览器 CUA + 联网搜索插件 + 自有用户/登录系统 + 用户组/邀请/分享
 
 > 完整可落地方案。基于开源项目 zai-org/ZCode v3.15.1（`standalone` 分支）。
 > 架构原则：**不改动 ZCode Web 前端界面**，保留全部原有 UI、任务、文件、终端、MCP 功能；
@@ -212,7 +212,51 @@ CDP 模式与客户端 Playwright 版本无关，兼容性最好；`playwright` 
 | `POST /search {"query","count"}` | 对外 Token（可选） | OpenWebUI external 兼容 |
 | `GET  /api/platform/browser/status` | 会话 | 远程浏览器桥状态（endpoint/mode/连通性） |
 | `GET  /healthz` | 无 | 健康检查 |
-| `GET  /login`、`GET /platform/admin` | 见页面 | 登录页 / 管理控制台 |
+| `GET  /login`、`GET /platform/admin`、`GET /platform/shares` | 见页面 | 登录页 / 管理控制台 / 分享中心 |
+
+### 用户组 / 邀请码 / 系统配置 / 分享（v3.15.1-standalone.2）
+
+| 方法/路径 | 鉴权 | 说明 |
+| --- | --- | --- |
+| `GET  /api/platform/groups` | 会话 | 组列表（admin 全量 / 普通用户仅自己所在组） |
+| `POST /api/platform/admin/groups` | admin | 创建组（name/description/permissions/memberIds） |
+| `PATCH/DELETE /api/platform/admin/groups/:id` | admin | 更新（name/permissions/memberIds 全量同步）/ 删除 |
+| `GET  /api/platform/admin/invites` | admin | 邀请码列表 |
+| `POST /api/platform/admin/invites` | admin | 生成邀请码（maxUses/expiresInDays/defaultRole/note） |
+| `PATCH/DELETE /api/platform/admin/invites/:code` | admin | 停用/启用 / 删除 |
+| `GET  /api/platform/auth/invite/:code` | 无 | 邀请码预检（注册页实时校验） |
+| `GET/PUT /api/platform/admin/config` | admin | 系统配置：enableSignup / requireInvite / defaultRole / loginNotice / pendingNotice |
+| `GET  /api/platform/resources` | 会话+chat.share | 可分享资源列表（sessions/tasks/projects） |
+| `POST /api/platform/shares` | 会话+chat.share | 创建分享快照（resourceType/resourceId/visibility） |
+| `GET/PATCH/DELETE /api/platform/shares[...]` | 会话 | 我的分享（admin 全量）；更新可见性 / 重新快照 / 删除 |
+| `GET  /s/:token` | open=免登录 / public=会话 | 分享落地页（SSR + og: meta，超越 OpenWebUI 的 SPA 无 meta 方案） |
+| `GET  /api/platform/shares/public/:token` | 同上 | 分享 JSON 快照 |
+
+### 管理员 CLI（密码重置等，解决忘记密码无法登录）
+
+```bash
+# 在部署机上直接运行（默认读 ~/.zcode/v2/platform/users.db，可用 ZCODE_PLATFORM_DB 覆盖）
+node scripts/platform-admin.mjs list                       # 列出用户
+node scripts/platform-admin.mjs reset-password <user> [pwd] # 重置密码（省略则随机生成）
+node scripts/platform-admin.mjs promote/approve/disable/enable <user>
+node scripts/platform-admin.mjs create <user> <pwd> [role]
+```
+
+### 功能说明（OpenWebUI 移植 + 自建）
+
+- **三级角色**：admin / user / pending。注册后角色取「系统设置 → 新注册用户默认角色」，
+  pending 用户除认证接口外全部 403，管理员在用户管理里「通过审批」放行（审批后旧会话全部失效需重登）；
+- **用户组**：`groups + group_members` 两表 + 点分键权限 JSON（OpenWebUI has_permission 同款语义：
+  任一所在组为 true 即放行，否则回退默认权限）。当前生效权限键：
+  `chat.share`（分享）、`chat.export`、`sharing.public`（免登录公开分享）、
+  `workspace.prompts`、`features.web_search`；
+- **邀请码**（OpenWebUI 无此机制，自建）：开启「注册需要邀请码」后注册必填；
+  支持次数上限 / 有效期 / 通过该码注册的默认角色 / 备注；注册页输入即实时校验；
+- **分享**：对话 / 任务 / 项目三种资源（task_id 即 session id，任务与对话共用 transcript）。
+  快照式设计（分享时刻落盘，后续编辑不影响），open=任何有链接的人可读，public=本站登录用户可读。
+  落地页为服务端渲染并注入 og:title/og:description（微信/Slack 链接预览可用）；
+  工作台右下角浮动「分享」按钮（运行时注入 `/platform/inject.js`，不改 SPA 源码）跳转分享中心；
+- **系统配置**：env 默认 + DB config 表覆盖（OpenWebUI AdminConfig 模式），保存即时生效无需重启。
 
 ---
 

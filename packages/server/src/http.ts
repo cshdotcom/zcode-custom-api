@@ -51,6 +51,15 @@ import {
 import type { PlatformStore } from "./platform/store.js";
 import type { SearchService } from "./platform/search.js";
 import type { RemoteBrowserExecutor } from "@zcode/browser-remote";
+import { PLATFORM_INJECT_JS } from "./platform/inject.js";
+
+/** 把平台增强脚本注入 SPA index.html（不改动前端构建产物，运行时附加一行 <script>）。 */
+function injectPlatformScript(html: string): string {
+  if (html.includes("/platform/inject.js")) return html;
+  const tag = '<script src="/platform/inject.js" defer></script>';
+  if (html.includes("</head>")) return html.replace("</head>", `${tag}</head>`);
+  return html + tag;
+}
 
 function wrapWebSocket(ws: WebSocket): ISocket {
   const onData = new Emitter<VSBuffer>();
@@ -334,6 +343,7 @@ export function createHttpServer(
     const platformDeps: PlatformDeps = {
       store: options.platform.store,
       search: options.platform.search,
+      ...(options.platform.snapshot ? { snapshot: options.platform.snapshot } : {}),
       ...(options.platform.browser ? { browser: options.platform.browser } : {}),
       ...(options.platform.serviceToken ? { serviceToken: options.platform.serviceToken } : {}),
     };
@@ -488,6 +498,14 @@ export function createHttpServer(
     }),
   );
 
+  // 平台增强脚本（工作台浮动分享按钮）。
+  app.get("/platform/inject.js", (c) =>
+    c.body(PLATFORM_INJECT_JS, 200, {
+      "Content-Type": "application/javascript; charset=utf-8",
+      "Cache-Control": "no-cache",
+    }),
+  );
+
   if (options.staticRoot?.trim()) {
     const staticRoot = options.staticRoot.trim();
     app.get("*", async (c) => {
@@ -496,10 +514,15 @@ export function createHttpServer(
       if (!filePath) {
         return c.notFound();
       }
-      return c.body(await readFile(filePath), 200, {
-        "Cache-Control": filePath.endsWith("index.html")
-          ? "no-cache"
-          : "public, max-age=31536000, immutable",
+      const content = await readFile(filePath);
+      const isIndex = filePath.endsWith("index.html");
+      if (isIndex && options.platform?.authEnabled) {
+        return c.html(injectPlatformScript(content.toString("utf-8")), 200, {
+          "Cache-Control": "no-cache",
+        });
+      }
+      return c.body(content, 200, {
+        "Cache-Control": isIndex ? "no-cache" : "public, max-age=31536000, immutable",
         "Content-Type": staticContentType(filePath),
       });
     });

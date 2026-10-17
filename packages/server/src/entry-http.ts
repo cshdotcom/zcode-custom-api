@@ -7,6 +7,7 @@ import {
 import { createHttpServer } from "./http.js";
 import { PlatformStore } from "./platform/store.js";
 import { SearchService } from "./platform/search.js";
+import { ZcodeDataSnapshotReader } from "./platform/snapshot.js";
 import { createRemoteBrowserExecutor, type RemoteBrowserExecutor } from "@zcode/browser-remote";
 import { registerPlatformSearchMcpServer } from "./platform/mcpRegistration.js";
 
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
             authEnabled: true,
             store,
             search,
+            snapshot: new ZcodeDataSnapshotReader(configDir),
             ...(browserExecutor ? { browser: browserExecutor } : {}),
             ...(serviceToken ? { serviceToken } : {}),
           },
