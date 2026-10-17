@@ -96,7 +96,8 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       // 生产不在浏览器产物暴露 sourceMappingURL，避免客户端侧还原业务源码。
-      sourcemap: mode === "production" ? "hidden" : true,
+      // 沙箱部署约束：hidden sourcemap 在 4GB 内存环境构建会 OOM (exit 137)，改为关闭。
+      sourcemap: false,
     },
   };
 });
