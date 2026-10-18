@@ -16,8 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 COPY . .
 RUN ELECTRON_SKIP_BINARY_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 PUPPETEER_SKIP_DOWNLOAD=1 \
     pnpm install --frozen-lockfile
-# browser-remote 是 server 运行时 external 依赖，必须先出 dist
-RUN pnpm --filter "@zcode/browser-remote..." build \
+# browser-remote 是 server 运行时 external 依赖，必须先出 dist；
+# agent CLI 以 tsx 源码模式运行，其全部 workspace 依赖（@zcode/core 等）必须有 dist，
+# 否则 CLI 子进程启动即崩（SQLite startup failed: transport_closed 连锁错误）
+RUN pnpm --filter "@zcode/cli^..." build \
+ && pnpm --filter "@zcode/browser-remote..." build \
  && pnpm --filter @zcode/server build
 RUN NODE_OPTIONS=--max-old-space-size=3000 pnpm --filter @zcode/web build
 
