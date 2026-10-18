@@ -79,6 +79,7 @@ import { WorkspaceFileSearchSection } from "@/settings/WorkspaceFileSearchSectio
 import { MemorySettingsSection } from "@/settings/MemorySettingsSection.js";
 import { PlatformSection } from "@/settings/PlatformSection.js";
 import { PlatformKnowledgeSection } from "@/settings/PlatformKnowledgeSection.js";
+import { PlatformPromptsSection } from "@/settings/PlatformPromptsSection.js";
 import { PlatformAdminSection } from "@/settings/PlatformAdminSection.js";
 import { usePlatformUser } from "@/platformUserStore.js";
 import { BrowserSettingsSection } from "@/settings/BrowserSettingsSection.js";
@@ -1993,6 +1994,8 @@ export function SettingsPage({
                           <PlatformSection />
                         ) : activeSection === "platformKnowledge" ? (
                           <PlatformKnowledgeSection />
+                        ) : activeSection === "platformPrompts" ? (
+                          <PlatformPromptsSection />
                         ) : activeSection === "platformAdmin" ? (
                           <PlatformAdminSection />
                         ) : activeSection === "browser" ? (

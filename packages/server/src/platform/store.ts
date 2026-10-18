@@ -110,6 +110,10 @@ export interface PlatformPrompt {
   content: string;
   /** 斜杠命令（可选，/xxx 触发聊天输入展开；OpenWebUI prompt.command 对应）。 */
   command?: string;
+  /** 标签（OpenWebUI prompt.tags 对应）。 */
+  tags?: string[];
+  /** 启停开关（禁用后聊天 / 面板不再出现）。 */
+  isActive?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -321,6 +325,14 @@ export class PlatformStore {
       this.#db.exec("ALTER TABLE prompts ADD COLUMN command TEXT;");
     } catch {
       // 列已存在时忽略。
+    }
+    // 提示词标签与启停（OpenWebUI prompt.tags / is_active 对应）。
+    for (const column of ["tags TEXT", "is_active INTEGER NOT NULL DEFAULT 1"]) {
+      try {
+        this.#db.exec(`ALTER TABLE prompts ADD COLUMN ${column};`);
+      } catch {
+        // 列已存在时忽略。
+      }
     }
   }
 
@@ -1005,33 +1017,105 @@ export class PlatformStore {
 
   // ================= 提示词库（个人 + 全局，OpenWebUI Prompts 同位功能） =================
 
-  listPrompts(viewer: PlatformUser): PlatformPrompt[] {
+  /** 提示词列表：默认含禁用项；query 模糊匹配标题/命令/内容；view=created|shared。 */
+  listPrompts(
+    viewer: PlatformUser,
+    options?: { query?: string; view?: "created" | "shared"; tag?: string },
+  ): PlatformPrompt[] {
+    const clauses: string[] = ["(p.owner_id IS NULL OR p.owner_id = ?)"];
+    const params: Array<string | number> = [viewer.id];
+    const query = options?.query?.trim();
+    if (query) {
+      clauses.push("(p.title LIKE ? OR p.content LIKE ? OR p.command LIKE ?)");
+      const like = `%${query.replace(/[%_]/g, " ")}%`;
+      params.push(like, like, like);
+    }
+    if (options?.view === "created") {
+      clauses.push("p.owner_id = ?");
+      params.push(viewer.id);
+    } else if (options?.view === "shared") {
+      clauses.push("p.owner_id IS NOT NULL AND p.owner_id != ?");
+      params.push(viewer.id);
+    }
+    const tag = options?.tag?.trim();
+    if (tag) {
+      clauses.push("p.tags LIKE ?");
+      params.push(`%"${tag.replace(/[%"]/g, "")}"%`);
+    }
     const rows = (
       this.#db
         .prepare(
-          "SELECT p.*, u.username AS owner_username FROM prompts p LEFT JOIN users u ON u.id = p.owner_id WHERE p.owner_id IS NULL OR p.owner_id = ? ORDER BY p.updated_at DESC",
+          `SELECT p.*, u.username AS owner_username FROM prompts p
+           LEFT JOIN users u ON u.id = p.owner_id
+           WHERE ${clauses.join(" AND ")}
+           ORDER BY p.updated_at DESC`,
         )
-        .all(viewer.id) as Array<{
-        id: string;
-        owner_id: string | null;
-        owner_username: string | null;
-        title: string;
-        content: string;
-        created_at: number;
-        updated_at: number;
-        command?: string | null;
-      }>
+        .all(...params) as unknown as PromptRow[]
+    ).map((row) => this.#rowToPrompt(row));
+    return rows;
+  }
+
+  /** 聊天 / 自动补全用：仅返回启用且可见的提示词（轻量字段）。 */
+  listActivePromptsForViewer(viewer: PlatformUser): Array<{
+    id: string;
+    command?: string;
+    title: string;
+    content: string;
+  }> {
+    const rows = (
+      this.#db
+        .prepare(
+          `SELECT p.id, p.command, p.title, p.content FROM prompts p
+           WHERE p.is_active = 1 AND (p.owner_id IS NULL OR p.owner_id = ?)
+           ORDER BY p.updated_at DESC`,
+        )
+        .all(viewer.id) as Array<{ id: string; command: string | null; title: string; content: string }>
     ).map((row) => ({
       id: row.id,
-      ...(row.owner_id ? { ownerId: row.owner_id } : {}),
-      ...(row.owner_username ? { ownerUsername: row.owner_username } : {}),
+      ...(row.command ? { command: row.command } : {}),
       title: row.title,
       content: row.content,
-      ...(row.command ? { command: row.command } : {}),
-      createdAt: Number(row.created_at),
-      updatedAt: Number(row.updated_at),
     }));
     return rows;
+  }
+
+  /** 按命令查提示词（聊天 /command 展开用）；不可见/禁用时返回 undefined。 */
+  getPromptByCommand(command: string, viewer: PlatformUser): PlatformPrompt | undefined {
+    const normalized = normalizePromptCommand(command);
+    if (!normalized) return undefined;
+    const row = this.#db
+      .prepare(
+        `SELECT p.*, u.username AS owner_username FROM prompts p
+         LEFT JOIN users u ON u.id = p.owner_id
+         WHERE p.command = ? AND p.is_active = 1 AND (p.owner_id IS NULL OR p.owner_id = ?)
+         LIMIT 1`,
+      )
+      .get(normalized, viewer.id) as PromptRow | undefined;
+    return row ? this.#rowToPrompt(row) : undefined;
+  }
+
+  /** 可见提示词的标签并集（OpenWebUI GET /prompts/tags 对应）。 */
+  listPromptTags(viewer: PlatformUser): string[] {
+    const rows = this.#db
+      .prepare(
+        "SELECT tags FROM prompts WHERE (owner_id IS NULL OR owner_id = ?) AND tags IS NOT NULL",
+      )
+      .all(viewer.id) as Array<{ tags: string | null }>;
+    const tags = new Set<string>();
+    for (const row of rows) {
+      if (!row.tags) continue;
+      try {
+        const parsed: unknown = JSON.parse(row.tags);
+        if (Array.isArray(parsed)) {
+          for (const tag of parsed) {
+            if (typeof tag === "string" && tag.trim()) tags.add(tag.trim());
+          }
+        }
+      } catch {
+        // 损坏 tags 忽略。
+      }
+    }
+    return [...tags].sort((a, b) => a.localeCompare(b));
   }
 
   createPrompt(input: {
@@ -1039,6 +1123,7 @@ export class PlatformStore {
     title: string;
     content: string;
     command?: string;
+    tags?: string[];
   }): PlatformPrompt {
     const command = normalizePromptCommand(input.command);
     if (command && this.#promptCommandTaken(command, input.ownerId ?? null)) {
@@ -1048,9 +1133,18 @@ export class PlatformStore {
     const now = Date.now();
     this.#db
       .prepare(
-        "INSERT INTO prompts (id, owner_id, title, content, command, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO prompts (id, owner_id, title, content, command, tags, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
       )
-      .run(id, input.ownerId ?? null, input.title, input.content, command ?? null, now, now);
+      .run(
+        id,
+        input.ownerId ?? null,
+        input.title,
+        input.content,
+        command ?? null,
+        input.tags && input.tags.length > 0 ? JSON.stringify(input.tags.slice(0, 20)) : null,
+        now,
+        now,
+      );
     return this.#getPromptOrThrow(id);
   }
 
@@ -1067,10 +1161,10 @@ export class PlatformStore {
   updatePrompt(
     id: string,
     viewer: PlatformUser,
-    patch: { title?: string; content?: string; command?: string },
+    patch: { title?: string; content?: string; command?: string; tags?: string[] },
   ): PlatformPrompt {
     const existing = this.#db.prepare("SELECT * FROM prompts WHERE id = ?").get(id) as
-      | { id: string; owner_id: string | null }
+      | ({ id: string; owner_id: string | null } & Partial<PromptRow>)
       | undefined;
     if (!existing) throw new Error("提示词不存在");
     if (existing.owner_id && existing.owner_id !== viewer.id && viewer.role !== "admin") {
@@ -1088,15 +1182,35 @@ export class PlatformStore {
     }
     this.#db
       .prepare(
-        "UPDATE prompts SET title = ?, content = ?, command = ?, updated_at = ? WHERE id = ?",
+        "UPDATE prompts SET title = ?, content = ?, command = ?, tags = ?, updated_at = ? WHERE id = ?",
       )
       .run(
-        patch.title ?? this.#getPromptTitle(id),
-        patch.content ?? this.#getPromptContent(id),
-        command !== undefined ? (command || null) : (existing as { command?: string | null }).command ?? null,
+        patch.title ?? existing.title ?? "",
+        patch.content ?? existing.content ?? "",
+        command !== undefined ? command || null : existing.command ?? null,
+        patch.tags !== undefined
+          ? patch.tags.length > 0
+            ? JSON.stringify(patch.tags.slice(0, 20))
+            : null
+          : existing.tags ?? null,
         Date.now(),
         id,
       );
+    return this.#getPromptOrThrow(id);
+  }
+
+  /** 启停切换（OpenWebUI togglePromptById 对应）。 */
+  togglePrompt(id: string, viewer: PlatformUser): PlatformPrompt {
+    const existing = this.#db
+      .prepare("SELECT id, owner_id, is_active FROM prompts WHERE id = ?")
+      .get(id) as { id: string; owner_id: string | null; is_active: number } | undefined;
+    if (!existing) throw new Error("提示词不存在");
+    if (existing.owner_id && existing.owner_id !== viewer.id && viewer.role !== "admin") {
+      throw new Error("无权修改他人的提示词");
+    }
+    this.#db
+      .prepare("UPDATE prompts SET is_active = ?, updated_at = ? WHERE id = ?")
+      .run(existing.is_active ? 0 : 1, Date.now(), id);
     return this.#getPromptOrThrow(id);
   }
 
@@ -1111,43 +1225,37 @@ export class PlatformStore {
     this.#db.prepare("DELETE FROM prompts WHERE id = ?").run(id);
   }
 
-  #getPromptTitle(id: string): string {
-    const row = this.#db.prepare("SELECT title FROM prompts WHERE id = ?").get(id) as
-      | { title: string }
-      | undefined;
-    return row?.title ?? "";
-  }
-
-  #getPromptContent(id: string): string {
-    const row = this.#db.prepare("SELECT content FROM prompts WHERE id = ?").get(id) as
-      | { content: string }
-      | undefined;
-    return row?.content ?? "";
-  }
-
   #getPromptOrThrow(id: string): PlatformPrompt {
     const row = this.#db
       .prepare(
         "SELECT p.*, u.username AS owner_username FROM prompts p LEFT JOIN users u ON u.id = p.owner_id WHERE p.id = ?",
       )
-      .get(id) as
-      | {
-          id: string;
-          owner_id: string | null;
-          owner_username: string | null;
-          title: string;
-          content: string;
-          created_at: number;
-          updated_at: number;
-        }
-      | undefined;
+      .get(id) as PromptRow | undefined;
     if (!row) throw new Error("提示词不存在");
+    return this.#rowToPrompt(row);
+  }
+
+  #rowToPrompt(row: PromptRow): PlatformPrompt {
+    let tags: string[] | undefined;
+    if (row.tags) {
+      try {
+        const parsed: unknown = JSON.parse(row.tags);
+        if (Array.isArray(parsed)) {
+          tags = parsed.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0);
+        }
+      } catch {
+        // 损坏 tags 忽略。
+      }
+    }
     return {
       id: row.id,
       ...(row.owner_id ? { ownerId: row.owner_id } : {}),
       ...(row.owner_username ? { ownerUsername: row.owner_username } : {}),
       title: row.title,
       content: row.content,
+      ...(row.command ? { command: row.command } : {}),
+      ...(tags && tags.length > 0 ? { tags } : {}),
+      isActive: Number(row.is_active ?? 1) !== 0,
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
@@ -1515,6 +1623,20 @@ export class PlatformStore {
 }
 
 export const PASSWORD_MIN = PASSWORD_MIN_LENGTH;
+
+/** prompts 表原始行（含迁移补列，均可空）。 */
+export interface PromptRow {
+  id: string;
+  owner_id: string | null;
+  owner_username?: string | null;
+  title: string;
+  content: string;
+  command: string | null;
+  tags: string | null;
+  is_active: number | null;
+  created_at: number;
+  updated_at: number;
+}
 
 /** 斜杠命令归一化：去前导 /、小写化、白名单校验；非法输入返回空串（视为未设置）。 */
 export function normalizePromptCommand(raw: string | undefined | null): string {

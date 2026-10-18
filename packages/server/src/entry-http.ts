@@ -7,6 +7,7 @@ import {
 } from "./bundledZCodeBuiltinProviderConfig.js";
 import { createHttpServer } from "./http.js";
 import { PlatformStore } from "./platform/store.js";
+import { WorkspaceStore } from "./platform/workspace.js";
 import { SearchService } from "./platform/search.js";
 import { ZcodeDataSnapshotReader } from "./platform/snapshot.js";
 import { createRemoteBrowserExecutor, type RemoteBrowserExecutor } from "@zcode/browser-remote";
@@ -54,10 +55,15 @@ async function main(): Promise<void> {
   const store = platformAuthEnabled
     ? new PlatformStore(join(configDir, "platform"))
     : undefined;
+  // 工作区资源（文件上传管线 + 知识库集合）：与用户库同 dataDir，uploads 子目录隔离。
+  const workspace = platformAuthEnabled
+    ? new WorkspaceStore(join(configDir, "platform"))
+    : undefined;
   const search = new SearchService(configDir);
   if (platformAuthEnabled) {
     store!.purgeExpiredSessions();
     console.log(`[zcode-server:platform] auth enabled (users.db: ${store!.filePath})`);
+    console.log(`[zcode-server:platform] workspace enabled (uploads: ${workspace!.uploadsRoot})`);
   }
 
   // 每用户数据隔离自检（OpenWebUI 同款多租户语义）：未启用时打印醒目告警，
@@ -105,6 +111,7 @@ async function main(): Promise<void> {
           platform: {
             authEnabled: true,
             store,
+            workspace,
             search,
             snapshot: globalSnapshot,
             snapshotForUser,

@@ -4,7 +4,9 @@
  * 并支持把用户填写值替换回模板展开为最终文本。
  */
 
-const VARIABLE_PATTERN = /\{\{\s*([A-Za-z][\w-]*)\s*\}\}/g;
+// 对齐 OpenWebUI extractInputVariables：变量名允许任意非空白内容（含中文，
+// 如 {{姓名}} / {{产品}}），仅要求两端花括号包裹、内部非空。
+const VARIABLE_PATTERN = /\{\{\s*([^{}\s][^{}]*?)\s*\}\}/g;
 
 /** 提取模板中的变量名（保序去重）。 */
 export function extractPromptTemplateVariables(template: string): string[] {

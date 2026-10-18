@@ -469,6 +469,7 @@ export function createHttpServer(
   if (options.platform?.authEnabled) {
     const platformDeps: PlatformDeps = {
       store: options.platform.store,
+      ...(options.platform.workspace ? { workspace: options.platform.workspace } : {}),
       search: options.platform.search,
       ...(options.platform.snapshot ? { snapshot: options.platform.snapshot } : {}),
       ...(options.platform.snapshotForUser

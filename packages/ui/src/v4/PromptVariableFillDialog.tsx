@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { expandPromptTemplate } from "@/lib/promptTemplateVariables.js";
 
 /**
  * 平台提示词变量填写弹窗（OpenWebUI InputVariablesModal 对应）：
@@ -39,14 +40,8 @@ export function PromptVariableFillDialog({
   if (!request) return null;
 
   const handleSubmit = (): void => {
-    const expanded = request.content.replace(
-      /\{\{\s*([A-Za-z][\w-]*)\s*\}\}/g,
-      (whole: string, name: string) => {
-        const value = values[name];
-        return value !== undefined && value !== "" ? value : whole;
-      },
-    );
-    onConfirm(expanded);
+    // 统一走共享展开工具（支持中文变量名，如 {{姓名}}），避免内联正则漂移。
+    onConfirm(expandPromptTemplate(request.content, values));
   };
 
   return (

@@ -18,10 +18,29 @@
  *     会话库、任务索引、setting.json、MCP 配置全部落到用户私有目录；
  *     即使上层漏覆写，数据也不会再合并进全局库。
  */
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+// ⚠️ 客户端安全：本模块经 @zcode/services barrel 被浏览器端模块图间接引用，
+// 严禁顶层 import node:fs / node:path（vite 会 externalize 并在求值时抛错，
+// 导致整个前端白屏）。fs 通过 process.getBuiltinModule 惰性获取，路径手工拼接。
 
 export const PLATFORM_USERS_ROOT_ENV = "ZCODE_PLATFORM_USERS_ROOT";
+
+/** 服务端获取 node:fs；浏览器端返回 undefined（永不应被调用）。 */
+function getFs(): typeof import("node:fs") | undefined {
+  try {
+    return (process as { getBuiltinModule?: (id: string) => unknown })
+      .getBuiltinModule?.("node:fs") as typeof import("node:fs") | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** posix 风格 join（本模块只处理服务端受控路径，段内不含 ".."）。 */
+function joinPath(...segments: string[]): string {
+  return segments
+    .filter((segment) => segment.length > 0)
+    .join("/")
+    .replace(/\/{2,}/g, "/");
+}
 
 const log = (...args: unknown[]) =>
   console.log("[zcode-server:platform-isolation]", ...args);
@@ -34,12 +53,12 @@ export function getPlatformUsersRoot(): string | undefined {
 
 /** 某平台用户的隔离工作区路径。 */
 export function platformUserWorkspacePath(usersRoot: string, userId: string): string {
-  return join(usersRoot, userId, "workspace");
+  return joinPath(usersRoot, userId, "workspace");
 }
 
 /** 某平台用户的隔离数据根（ZCODE_DATA_BASE_DIR 目标）。 */
 export function platformUserDataPath(usersRoot: string, userId: string): string {
-  return join(usersRoot, userId, "data");
+  return joinPath(usersRoot, userId, "data");
 }
 
 /** workspaceIdentity 约定前缀：同一物理路径在不同用户语义下是不同 agent 池。 */
@@ -66,9 +85,12 @@ export function buildPlatformUserIsolationEnv(
   if (!userId || userId.includes("..")) return {};
 
   const dataDir = platformUserDataPath(normalizedRoot, userId);
-  for (const dir of [dataDir, workspacePath]) {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+  const fs = getFs();
+  if (fs) {
+    for (const dir of [dataDir, workspacePath]) {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
     }
   }
   log(`user data isolation active`, { userId, dataDir, workspacePath });
@@ -95,11 +117,14 @@ export function wrapServiceWithPlatformIsolation<T extends object>(
   if (!usersRoot) return service;
   const workspacePath = platformUserWorkspacePath(usersRoot, userId);
   const dataPath = platformUserDataPath(usersRoot, userId);
-  if (!existsSync(workspacePath)) {
-    mkdirSync(workspacePath, { recursive: true });
-  }
-  if (!existsSync(dataPath)) {
-    mkdirSync(dataPath, { recursive: true });
+  const fs = getFs();
+  if (fs) {
+    if (!fs.existsSync(workspacePath)) {
+      fs.mkdirSync(workspacePath, { recursive: true });
+    }
+    if (!fs.existsSync(dataPath)) {
+      fs.mkdirSync(dataPath, { recursive: true });
+    }
   }
   const identity = platformUserIdentity(userId);
 

@@ -4,6 +4,7 @@ import { parseCookieHeader } from "./cookies.js";
 import type { PlatformStore } from "./store.js";
 import { PASSWORD_MIN, type PlatformUser } from "./store.js";
 import { SearchService, SEARCH_PROVIDERS } from "./search.js";
+import type { WorkspaceStore } from "./workspace.js";
 import type { RemoteBrowserExecutor } from "@zcode/browser-remote";
 import { ZcodeDataSnapshotReader } from "./snapshot.js";
 import { extractDocumentText } from "./extract.js";
@@ -37,6 +38,8 @@ type PlatformContext = Context<PlatformEnv>;
 export interface PlatformDeps {
   /** 平台用户存储；未启用平台登录（ZCODE_PLATFORM_AUTH=1）时省略。 */
   store?: PlatformStore;
+  /** 工作区资源（文件上传 + 知识库集合）；平台启用后注入。 */
+  workspace?: WorkspaceStore;
   search: SearchService;
   browser?: RemoteBrowserExecutor;
   /** ZCode 数据快照读取器（分享功能）：全局实例（未启用每用户隔离时的回退）。 */
@@ -1036,7 +1039,29 @@ export function registerPlatformRoutes(app: Hono<PlatformEnv>, deps: PlatformDep
     const user = c.get("platformUser") as PlatformUser | undefined;
     if (!user) return jsonError(c, "Unauthorized", 401);
     if (user.role === "pending") return jsonError(c, "账号待审批", 403);
-    return c.json({ prompts: store.listPrompts(user) });
+    const url = new URL(c.req.url);
+    const query = url.searchParams.get("query") ?? undefined;
+    const viewRaw = url.searchParams.get("view");
+    const view = viewRaw === "created" || viewRaw === "shared" ? viewRaw : undefined;
+    const tag = url.searchParams.get("tag") ?? undefined;
+    return c.json({
+      prompts: store.listPrompts(user, {
+        ...(query ? { query } : {}),
+        ...(view ? { view } : {}),
+        ...(tag ? { tag } : {}),
+      }),
+      tags: store.listPromptTags(user),
+    });
+  });
+
+  // 聊天 / 自动补全：轻量启用的提示词（OpenWebUI GET /prompts 对应）。
+  app.get("/api/platform/prompts/commands", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    if (user.role === "pending") return jsonError(c, "账号待审批", 403);
+    return c.json({ prompts: store.listActivePromptsForViewer(user) });
   });
 
   app.post("/api/platform/prompts", async (c) => {
@@ -1054,12 +1079,16 @@ export function registerPlatformRoutes(app: Hono<PlatformEnv>, deps: PlatformDep
     if (!title) return jsonError(c, "标题不能为空");
     if (!content.trim()) return jsonError(c, "内容不能为空");
     const isGlobal = body.global === true && user.role === "admin";
+    const tags = Array.isArray(body.tags)
+      ? body.tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0).slice(0, 20)
+      : undefined;
     try {
       const prompt = store.createPrompt({
         ...(isGlobal ? {} : { ownerId: user.id }),
         title: title.slice(0, 200),
         content: content.slice(0, 32_000),
         ...(body.command !== undefined ? { command: String(body.command) } : {}),
+        ...(tags ? { tags } : {}),
       });
       store.recordEvent("prompt.create", user, title);
       return c.json({ prompt });
@@ -1074,12 +1103,30 @@ export function registerPlatformRoutes(app: Hono<PlatformEnv>, deps: PlatformDep
     const user = c.get("platformUser") as PlatformUser | undefined;
     if (!user) return jsonError(c, "Unauthorized", 401);
     const body = await readJson(c);
+    const tags = Array.isArray(body.tags)
+      ? body.tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0).slice(0, 20)
+      : undefined;
     try {
       const prompt = store.updatePrompt(c.req.param("id"), user, {
         ...(body.title !== undefined ? { title: String(body.title).slice(0, 200) } : {}),
         ...(body.content !== undefined ? { content: String(body.content).slice(0, 32_000) } : {}),
         ...(body.command !== undefined ? { command: String(body.command) } : {}),
+        ...(tags !== undefined ? { tags } : {}),
       });
+      return c.json({ prompt });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  // 启停切换（OpenWebUI POST /prompts/id/{id}/toggle 对应）。
+  app.post("/api/platform/prompts/:id/toggle", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    try {
+      const prompt = store.togglePrompt(c.req.param("id"), user);
       return c.json({ prompt });
     } catch (error) {
       return jsonError(c, error instanceof Error ? error.message : String(error), 403);
@@ -1214,6 +1261,328 @@ export function registerPlatformRoutes(app: Hono<PlatformEnv>, deps: PlatformDep
     // 普通用户只检索自己的文档；admin / 内部服务令牌全库检索。
     const ownerId = !isService && user && user.role !== "admin" ? user.id : undefined;
     return c.json({ hits: store.searchKb(query, limit, { ...(ownerId ? { ownerId } : {}) }) });
+  });
+
+  // ---------- 文件上传管线（OpenWebUI /api/v1/files 对应） ----------
+  // 聊天附件与知识库共用：原始文件落盘（每用户目录隔离）+ 抽取文本入库，
+  // 后续加入知识库时建 FTS 索引供 agent 检索。
+
+  const requireFileUser = (c: PlatformContext): { user: PlatformUser } | Response => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    if (!deps.workspace) return jsonError(c, "工作区存储未启用", 503);
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    if (user.role === "pending") return jsonError(c, "账号待审批", 403);
+    if (user.status !== "active") return jsonError(c, "账号不可用", 403);
+    return { user };
+  };
+
+  app.post("/api/platform/files", async (c) => {
+    const scope = requireFileUser(c);
+    if (scope instanceof Response) return scope;
+    const workspace = deps.workspace!;
+    let form: Record<string, string | File>;
+    try {
+      form = await c.req.parseBody();
+    } catch {
+      return jsonError(c, "需要 multipart/form-data 请求");
+    }
+    const part = form.file;
+    if (!part || typeof part === "string") return jsonError(c, "缺少文件字段 file");
+    const rawName = (part as File).name || "untitled.txt";
+    const safeName = rawName.replace(/[/\\]/g, "_").slice(0, 260);
+    const buffer = Buffer.from(await (part as File).arrayBuffer());
+    if (buffer.length === 0) return jsonError(c, "文件为空");
+    // 可选 metadata（JSON 字符串，OpenWebUI 同款 Form 字段）。
+    let meta: Record<string, unknown> | undefined;
+    if (typeof form.metadata === "string" && form.metadata.trim()) {
+      try {
+        const parsed: unknown = JSON.parse(form.metadata);
+        if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>;
+      } catch {
+        return jsonError(c, "metadata 不是合法 JSON");
+      }
+    }
+    // 抽取文本（与知识库同管线）：失败时文件仍保留（status=failed，可下载/重试）。
+    let content: string | undefined;
+    let error: string | undefined;
+    let engine: string | undefined;
+    try {
+      const extracted = await extractDocumentText(safeName, buffer);
+      engine = extracted.engine;
+      if (extracted.text.trim()) {
+        content = extracted.text;
+      } else {
+        error = "未能从文件中提取到文本";
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+    try {
+      const file = workspace.createFile({
+        ownerId: scope.user.id,
+        filename: safeName,
+        buffer,
+        ...(content !== undefined ? { content } : {}),
+        ...(error ? { error } : {}),
+        ...(meta ? { meta } : {}),
+      });
+      deps.store?.recordEvent("file.upload", scope.user, `${safeName} (${buffer.length} 字节${engine ? `, ${engine}` : ""})`);
+      return c.json({ file, ...(engine ? { engine } : {}), ...(content ? { textLength: content.length } : {}) });
+    } catch (err) {
+      return jsonError(c, err instanceof Error ? err.message : String(err), err instanceof Error && err.message.includes("过大") ? 413 : 422);
+    }
+  });
+
+  app.get("/api/platform/files", (c) => {
+    const scope = requireFileUser(c);
+    if (scope instanceof Response) return scope;
+    const workspace = deps.workspace!;
+    const ownerId = scope.user.role === "admin" ? undefined : scope.user.id;
+    return c.json({ files: workspace.listFiles({ ...(ownerId ? { ownerId } : {}) }) });
+  });
+
+  app.get("/api/platform/files/:id", (c) => {
+    const scope = requireFileUser(c);
+    if (scope instanceof Response) return scope;
+    const file = deps.workspace!.getFile(c.req.param("id") ?? "", scope.user);
+    if (!file) return jsonError(c, "文件不存在", 404);
+    return c.json({ file });
+  });
+
+  // 文本内容编辑保存（OpenWebUI POST /files/{id}/data/content/update 对应）。
+  app.post("/api/platform/files/:id/content", async (c) => {
+    const scope = requireFileUser(c);
+    if (scope instanceof Response) return scope;
+    const body = await readJson(c);
+    const content = String(body.content ?? "");
+    if (!content.trim()) return jsonError(c, "内容不能为空");
+    try {
+      const file = deps.workspace!.updateFileContent(c.req.param("id") ?? "", scope.user, content);
+      return c.json({ file });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  // 原始文件下载（图片预览 <img>/附件下载共用）。
+  app.get("/api/platform/files/:id/content", (c) => {
+    const scope = requireFileUser(c);
+    if (scope instanceof Response) return scope;
+    const payload = deps.workspace!.readFileBuffer(c.req.param("id") ?? "", scope.user);
+    if (!payload) return jsonError(c, "文件不存在", 404);
+    const attachment = c.req.query("attachment") === "true";
+    const disposition = attachment ? "attachment" : "inline";
+    c.header(
+      "Content-Disposition",
+      `${disposition}; filename*=UTF-8''${encodeURIComponent(payload.filename)}`,
+    );
+    const ext = payload.filename.includes(".") ? payload.filename.split(".").pop()!.toLowerCase() : "";
+    const mime =
+      ext === "png" ? "image/png"
+      : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+      : ext === "gif" ? "image/gif"
+      : ext === "webp" ? "image/webp"
+      : ext === "svg" ? "image/svg+xml"
+      : ext === "pdf" ? "application/pdf"
+      : "application/octet-stream";
+    return c.body(new Uint8Array(payload.buffer), 200, { "Content-Type": mime });
+  });
+
+  app.delete("/api/platform/files/:id", (c) => {
+    const scope = requireFileUser(c);
+    if (scope instanceof Response) return scope;
+    try {
+      const ok = deps.workspace!.deleteFile(c.req.param("id") ?? "", scope.user);
+      if (!ok) return jsonError(c, "文件不存在", 404);
+      return c.json({ ok: true });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  // ---------- 知识库集合（OpenWebUI knowledge collection 对应） ----------
+
+  const requireCollectionUser = (c: PlatformContext): { user: PlatformUser } | Response => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    if (!deps.workspace) return jsonError(c, "工作区存储未启用", 503);
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    if (user.role === "pending") return jsonError(c, "账号待审批", 403);
+    if (user.status !== "active") return jsonError(c, "账号不可用", 403);
+    return { user };
+  };
+
+  app.get("/api/platform/kb/collections", (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    const workspace = deps.workspace!;
+    const url = new URL(c.req.url);
+    const query = url.searchParams.get("query") ?? undefined;
+    const viewRaw = url.searchParams.get("view");
+    const view = viewRaw === "created" || viewRaw === "shared" ? viewRaw : undefined;
+    const isAdmin = scope.user.role === "admin";
+    // admin 旁路可见全部（BYPASS_ADMIN_ACCESS_CONTROL 语义）；传 view 时仍按 view 过滤。
+    const collections = workspace.listCollections({
+      ...(isAdmin ? {} : { ownerId: scope.user.id }),
+      ...(isAdmin && view ? { view } : {}),
+      ...(query ? { query } : {}),
+    });
+    return c.json({ collections });
+  });
+
+  app.post("/api/platform/kb/collections", async (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    const body = await readJson(c);
+    const name = String(body.name ?? "").trim();
+    if (!name) return jsonError(c, "知识库名称不能为空");
+    try {
+      const collection = deps.workspace!.createCollection({
+        ownerId: scope.user.id,
+        name,
+        ...(body.description !== undefined ? { description: String(body.description) } : {}),
+      });
+      deps.store?.recordEvent("kb.collection.create", scope.user, name);
+      return c.json({ collection });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  app.patch("/api/platform/kb/collections/:id", async (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    const body = await readJson(c);
+    try {
+      const collection = deps.workspace!.updateCollection(c.req.param("id") ?? "", scope.user, {
+        ...(body.name !== undefined ? { name: String(body.name) } : {}),
+        ...(body.description !== undefined ? { description: String(body.description) } : {}),
+      });
+      return c.json({ collection });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  app.delete("/api/platform/kb/collections/:id", (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    try {
+      const ok = deps.workspace!.deleteCollection(c.req.param("id") ?? "", scope.user);
+      if (!ok) return jsonError(c, "知识库不存在", 404);
+      deps.store?.recordEvent("kb.collection.delete", scope.user, c.req.param("id") ?? "");
+      return c.json({ ok: true });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  app.get("/api/platform/kb/collections/:id/files", (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    try {
+      const files = deps.workspace!.listCollectionFiles(c.req.param("id") ?? "", scope.user);
+      return c.json({ files });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 404);
+    }
+  });
+
+  // 已上传文件加入集合（OpenWebUI POST /knowledge/{id}/file/add 对应）。
+  app.post("/api/platform/kb/collections/:id/files", async (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    const body = await readJson(c);
+    const fileId = String(body.fileId ?? body.file_id ?? "").trim();
+    if (!fileId) return jsonError(c, "缺少 fileId");
+    try {
+      const file = deps.workspace!.addFileToCollection(c.req.param("id") ?? "", fileId, scope.user);
+      deps.store?.recordEvent("kb.collection.add_file", scope.user, file.filename);
+      return c.json({ file });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 400);
+    }
+  });
+
+  // 上传并直接加入集合（一步到位，详情页上传走这条）。
+  app.post("/api/platform/kb/collections/:id/files/upload", async (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    const workspace = deps.workspace!;
+    const collectionId = c.req.param("id") ?? "";
+    let form: Record<string, string | File>;
+    try {
+      form = await c.req.parseBody();
+    } catch {
+      return jsonError(c, "需要 multipart/form-data 请求");
+    }
+    const part = form.file;
+    if (!part || typeof part === "string") return jsonError(c, "缺少文件字段 file");
+    const rawName = (part as File).name || "untitled.txt";
+    const safeName = rawName.replace(/[/\\]/g, "_").slice(0, 260);
+    const buffer = Buffer.from(await (part as File).arrayBuffer());
+    if (buffer.length === 0) return jsonError(c, "文件为空");
+    let content: string | undefined;
+    let error: string | undefined;
+    try {
+      const extracted = await extractDocumentText(safeName, buffer);
+      if (extracted.text.trim()) content = extracted.text;
+      else error = "未能从文件中提取到文本";
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+    try {
+      const file = workspace.createFile({
+        ownerId: scope.user.id,
+        filename: safeName,
+        buffer,
+        ...(content !== undefined ? { content } : {}),
+        ...(error ? { error } : {}),
+        meta: { collectionId },
+      });
+      const linked = workspace.addFileToCollection(collectionId, file.id, scope.user);
+      deps.store?.recordEvent("kb.collection.upload", scope.user, `${safeName} → 集合`);
+      return c.json({ file, collectionFile: linked, ...(content ? { textLength: content.length } : {}) });
+    } catch (err) {
+      return jsonError(c, err instanceof Error ? err.message : String(err), 400);
+    }
+  });
+
+  app.delete("/api/platform/kb/collections/:id/files/:fileId", (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    const deleteFile = c.req.query("delete_file") === "true";
+    try {
+      const ok = deps.workspace!.removeFileFromCollection(
+        c.req.param("id") ?? "",
+        c.req.param("fileId") ?? "",
+        scope.user,
+        deleteFile,
+      );
+      if (!ok) return jsonError(c, "关联不存在", 404);
+      return c.json({ ok: true });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  // 集合内检索预览（带集合上下文的命中）。
+  app.get("/api/platform/kb/collections/search", (c) => {
+    const scope = requireCollectionUser(c);
+    if (scope instanceof Response) return scope;
+    const url = new URL(c.req.url);
+    const query = url.searchParams.get("q") ?? "";
+    const collectionId = url.searchParams.get("collectionId") ?? undefined;
+    const limit = Number(url.searchParams.get("limit") ?? "") || undefined;
+    return c.json({
+      hits: deps.workspace!.searchCollections(query, scope.user, {
+        ...(collectionId ? { collectionId } : {}),
+        ...(limit ? { limit } : {}),
+      }),
+    });
   });
 
   // ---------- 用量统计与审计日志（管理员） ----------

@@ -2333,6 +2333,7 @@ const zhCN: Record<string, string> = {
   "settings.systemTitle": "常规",
   "settings.platformTitle": "平台中心",
   "settings.platformKnowledgeTitle": "知识库",
+  "settings.platformPromptsTitle": "提示词",
   "settings.platformAdminTitle": "平台管理",
   "settings.systemDescription": "这些设置会影响当前窗口的显示与交互。",
   "settings.locale": "界面语言",

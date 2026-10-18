@@ -58,6 +58,20 @@ export default defineConfig(({ mode }) => {
       // 沙箱预览网关回源时会改写 Host（*.fcapp.run / 内部 ALB 域名），
       // dev 服务器需放行任意 Host，否则网关侧全部 403。
       allowedHosts: true,
+      // 沙箱 inotify 限额仅 8192 且不可调：仓库自带海量文档/图标/示例，
+      // 全部纳入 watch 会直接 ENOSPC 崩溃。改用轮询（不占 inotify）+ 白名单
+      // 只监听 ui/web 源码与入口，其余一律跳过。
+      watch: {
+        usePolling: true,
+        interval: 3000,
+        ignored: (path: string) => {
+          const p = path.split("\\").join("/");
+          if (/\/packages\/(web|ui|services)\/src\//.test(p)) return false;
+          if (/\/packages\/web\/index\.html$/.test(p)) return false;
+          if (/\/packages\/web\/vite\.config\.ts$/.test(p)) return false;
+          return true;
+        },
+      },
       proxy: {
         // Web 登录本地调试时，OAuth token 交换必须先命中线上同源接口。
         // 该专用代理放在 `/api` 通配代理之前，避免被转发到本地 server 导致 404。

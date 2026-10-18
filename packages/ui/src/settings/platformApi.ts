@@ -89,8 +89,48 @@ export interface PlatformPromptRow {
   content: string;
   /** 斜杠命令（可选）：聊天输入 /命令 触发展开。 */
   command?: string;
+  /** 标签（OpenWebUI prompt.tags 对应）。 */
+  tags?: string[];
+  /** 启停开关：禁用后聊天 / 面板不再出现。 */
+  isActive?: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface PlatformFileRow {
+  id: string;
+  ownerId: string;
+  ownerUsername?: string;
+  filename: string;
+  size: number;
+  status: "completed" | "failed";
+  error?: string;
+  content?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PlatformKbCollectionRow {
+  id: string;
+  ownerId: string;
+  ownerUsername?: string;
+  name: string;
+  description?: string;
+  fileCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PlatformCollectionFileRow {
+  fileId: string;
+  filename: string;
+  size: number;
+  status: "completed" | "failed";
+  chunkCount: number;
+  addedBy?: string;
+  addedByUsername?: string;
+  addedAt: number;
+  fileCreatedAt: number;
 }
 
 export interface PlatformKbDocRow {
@@ -139,7 +179,11 @@ export async function platformApi<T>(path: string, init?: RequestInit): Promise<
     ...init,
     headers: {
       accept: "application/json",
-      ...(init?.body ? { "content-type": "application/json" } : {}),
+      // FormData 必须让浏览器自动生成 multipart boundary，禁止覆盖 content-type，
+      // 否则服务端 parseBody 解析不出任何字段（表现为"缺少文件字段 file" 400）。
+      ...(init?.body && !(init.body instanceof FormData)
+        ? { "content-type": "application/json" }
+        : {}),
     },
   });
   const data: unknown = await response.json().catch(() => ({}));

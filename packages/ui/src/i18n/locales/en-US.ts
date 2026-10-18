@@ -2476,6 +2476,7 @@ const enUS: Record<string, string> = {
   "settings.systemTitle": "General",
   "settings.platformTitle": "Platform",
   "settings.platformKnowledgeTitle": "Knowledge",
+  "settings.platformPromptsTitle": "Prompts",
   "settings.platformAdminTitle": "Platform Administration",
   "settings.systemDescription": "These preferences affect the current window experience.",
   "settings.locale": "Language",
