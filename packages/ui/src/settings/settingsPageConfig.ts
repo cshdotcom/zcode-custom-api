@@ -20,6 +20,7 @@ import {
   WandSparkles,
   Keyboard,
   FileSearch,
+  LibraryBig,
 } from "lucide-react";
 import { isSettingsSectionEnabled, type SettingsSectionId } from "@/lib/settingsNavigation.js";
 import type { Theme } from "@/useTheme.js";
@@ -165,6 +166,13 @@ const BASE_SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     titleId: "settings.platformTitle",
     groupId: "basics",
   },
+  // 平台知识库：OpenWebUI workspace/knowledge 用户级复刻（所有平台用户可见）。
+  {
+    id: "platformKnowledge",
+    icon: LibraryBig,
+    titleId: "settings.platformKnowledgeTitle",
+    groupId: "basics",
+  },
   // 平台管理：仅平台管理员可见的用户 / 邀请码 / 用户组 / 系统设置控制台。
   {
     id: "platformAdmin",
@@ -181,6 +189,7 @@ export const SETTINGS_SECTIONS = BASE_SETTINGS_SECTIONS.filter(
   (section) =>
     section.id !== "computerUse" &&
     section.id !== "platform" &&
+    section.id !== "platformKnowledge" &&
     section.id !== "platformAdmin" &&
     isSettingsSectionEnabled(section.id),
 );
@@ -205,6 +214,7 @@ export function createSettingsPageConfig({
   const settingsSections = BASE_SETTINGS_SECTIONS.filter((section) => {
     if (section.id === "computerUse" && !showComputerUse) return false;
     if (section.id === "platform" && !showPlatform) return false;
+    if (section.id === "platformKnowledge" && !showPlatform) return false;
     if (section.id === "platformAdmin" && !showPlatformAdmin) return false;
     return isSettingsSectionEnabled(section.id);
   });

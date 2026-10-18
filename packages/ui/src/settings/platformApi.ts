@@ -98,6 +98,8 @@ export interface PlatformKbDocRow {
   size: number;
   chunkCount: number;
   createdAt: number;
+  ownerId?: string;
+  ownerUsername?: string;
 }
 
 export interface PlatformStatsRow {

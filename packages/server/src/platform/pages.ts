@@ -56,6 +56,12 @@ export function shareViewPageHtml(share: {
         messageCount?: number;
         rows?: Array<{ role: string; text: string; tools?: string[]; reasoning?: string; time?: number }>;
         task?: { title?: string; status?: string; workspacePath?: string; model?: string };
+        transcript?: {
+          title?: string;
+          messageCount?: number;
+          model?: string;
+          rows?: Array<{ role: string; text: string; tools?: string[]; reasoning?: string; time?: number }>;
+        };
         tasks?: Array<{ title?: string; status?: string; workspacePath?: string }>;
         generatedAt?: number;
       }

@@ -150,6 +150,15 @@ export {
   createZCodeAgentConnectionScope,
   readTrustedZCodeAgentV4Connection,
 } from "./zcode-agent/zcodeAgentConnectionScope.js";
+export {
+  buildPlatformUserIsolationEnv,
+  getPlatformUsersRoot,
+  platformUserDataPath,
+  platformUserIdentity,
+  platformUserWorkspacePath,
+  wrapServiceWithPlatformIsolation,
+  PLATFORM_USERS_ROOT_ENV,
+} from "./zcode-agent/platformIsolation.js";
 export type {
   ZCodeAgentConnectionScope,
   ZCodeAgentV4ClientMode,

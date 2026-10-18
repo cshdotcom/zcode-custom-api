@@ -6,6 +6,7 @@ import { hostname } from "node:os";
 import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
+import type { PlatformEnv } from "./platform/routes.js";
 import type { WebSocket } from "ws";
 import {
   Emitter,
@@ -30,6 +31,10 @@ import {
   ITerminalService,
   IBotsService,
   IProviderProvisioningTargetService,
+  IZCodeTaskService,
+  IZCodeSessionService,
+  ISettingService,
+  wrapServiceWithPlatformIsolation,
 } from "@zcode/services";
 import {
   botProviders,
@@ -101,12 +106,14 @@ function setupChannelServer(
   services: ServiceCollection,
   clientMode: "desktop-continuous" | "web-remote-replayable",
   resourcePeers?: TopicResourcePeers,
+  platformUserId?: string,
 ) {
   const socket = wrapWebSocket(ws);
   const protocol = new SocketProtocol(socket);
   attachChannelServer(protocol, services, clientMode, resourcePeers, {
     connectionIdPrefix: "server-ws",
     socketOnClose: socket.onClose,
+    ...(platformUserId ? { platformUserId } : {}),
   });
 }
 
@@ -200,6 +207,8 @@ function attachChannelServer(
   opts?: {
     connectionIdPrefix?: string;
     socketOnClose?: (listener: () => void) => { dispose(): void };
+    /** 平台已认证用户：启用每用户数据隔离（workspacePath 覆写 + CLI 数据根隔离） */
+    platformUserId?: string;
   },
 ): () => void {
   const rawServer = new ChannelServer(protocol, "server");
@@ -221,6 +230,30 @@ function attachChannelServer(
   const overrides = new Map<string, unknown>();
   if (connectionScope) {
     overrides.set(IZCodeAgentService.channelName, connectionScope.service);
+  }
+  // 平台每用户数据隔离：已认证连接上，所有携带 workspacePath/workspaceIdentity
+  // 的服务调用都被覆写到该用户的私有工作区/身份，前端无法越权指定他人路径。
+  if (opts?.platformUserId) {
+    const isolationTargets = [
+      IZCodeAgentService,
+      IZCodeTaskService,
+      IZCodeSessionService,
+      IFileService,
+      IGitService,
+      ITerminalService,
+      ISettingService,
+    ] as const;
+    for (const descriptor of isolationTargets) {
+      const current =
+        overrides.get(descriptor.channelName) ??
+        services.getOptional(descriptor as Parameters<typeof services.getOptional>[0]);
+      if (current) {
+        overrides.set(
+          descriptor.channelName,
+          wrapServiceWithPlatformIsolation(current as object, opts.platformUserId),
+        );
+      }
+    }
   }
   // Provisioning 携带跨 Environment 凭据，只允许 Desktop trusted host 使用；普通 Web
   // remote/replayable 客户端即使知道频道名，也不能获得 target 写入接口。
@@ -428,7 +461,7 @@ export function createHttpServer(
   port = 3030,
   options: HttpServerOptions = {},
 ) {
-  const app = new Hono();
+  const app = new Hono<PlatformEnv>();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const hostCapabilities = createHostCapabilityStore();
 
@@ -438,6 +471,9 @@ export function createHttpServer(
       store: options.platform.store,
       search: options.platform.search,
       ...(options.platform.snapshot ? { snapshot: options.platform.snapshot } : {}),
+      ...(options.platform.snapshotForUser
+        ? { snapshotForUser: options.platform.snapshotForUser }
+        : {}),
       ...(options.platform.browser ? { browser: options.platform.browser } : {}),
       ...(options.platform.serviceToken ? { serviceToken: options.platform.serviceToken } : {}),
     };
@@ -467,10 +503,12 @@ export function createHttpServer(
   // Lite Token），与 /ws 同一信任模型。
   // ============================================================================
   app.post("/api/channel", (c) => {
+    const platformUser = c.get("platformUser") as { id?: string } | undefined;
     const channelId = randomUUID();
     const protocol = new HttpChannelProtocol();
     const dispose = attachChannelServer(protocol, services, "web-remote-replayable", undefined, {
       connectionIdPrefix: "server-http",
+      ...(platformUser?.id ? { platformUserId: platformUser.id } : {}),
     });
     httpChannels.set(channelId, { protocol, dispose, createdAt: Date.now() });
     log(`[http-channel] created ${channelId} (active=${httpChannels.size})`);
@@ -522,11 +560,23 @@ export function createHttpServer(
   // 都不能再把自己提升为 trusted host。
   app.get(
     "/ws",
-    upgradeWebSocket(() => ({
-      onOpen(_event, ws) {
-        setupChannelServer(ws.raw as WebSocket, services, "web-remote-replayable");
-      },
-    })),
+    upgradeWebSocket((c) => {
+      // 平台每用户数据隔离：升级请求已被平台鉴权中间件解析会话，
+      // 将用户身份绑定到该连接的全部 RPC 调用。
+      const platformUser = c.get("platformUser") as { id?: string } | undefined;
+      const platformUserId = platformUser?.id;
+      return {
+        onOpen(_event, ws) {
+          setupChannelServer(
+            ws.raw as WebSocket,
+            services,
+            "web-remote-replayable",
+            undefined,
+            platformUserId,
+          );
+        },
+      };
+    }),
   );
 
   const upgradeTrustedHostWebSocket = upgradeWebSocket(() => ({
@@ -655,11 +705,22 @@ export function createHttpServer(
     const staticRoot = options.staticRoot.trim();
     app.get("*", async (c) => {
       const pathname = new URL(c.req.url).pathname;
-      const filePath = await resolveStaticFile(staticRoot, pathname, options.spaFallback ?? true);
+      let filePath: string | null;
+      try {
+        filePath = await resolveStaticFile(staticRoot, pathname, options.spaFallback ?? true);
+      } catch {
+        return c.notFound();
+      }
       if (!filePath) {
         return c.notFound();
       }
-      const content = await readFile(filePath);
+      let content: Uint8Array<ArrayBuffer>;
+      try {
+        content = Uint8Array.from(await readFile(filePath));
+      } catch {
+        // 静态文件在 stat 与 read 之间被删除等竞态：返回 404 而不是裸 500。
+        return c.notFound();
+      }
       const isIndex = filePath.endsWith("index.html");
       if (isIndex) {
         return c.body(content, 200, {

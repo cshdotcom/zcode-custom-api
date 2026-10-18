@@ -1,4 +1,5 @@
 import { createLocalServices, createTopicResourcePeers, getAppConfigDir } from "@zcode/services/node";
+import { getPlatformUsersRoot, platformUserDataPath } from "@zcode/services";
 import { join } from "node:path";
 import {
   materializeBundledZCodeBuiltinProviderConfig,
@@ -59,6 +60,26 @@ async function main(): Promise<void> {
     console.log(`[zcode-server:platform] auth enabled (users.db: ${store!.filePath})`);
   }
 
+  // 每用户数据隔离自检（OpenWebUI 同款多租户语义）：未启用时打印醒目告警，
+  // 避免多用户部署误把会话/任务/配置写进全局共享目录。
+  const usersRoot = getPlatformUsersRoot();
+  if (platformAuthEnabled && !usersRoot) {
+    console.warn(
+      "[zcode-server:platform] ⚠️ 未设置 ZCODE_PLATFORM_USERS_ROOT：所有平台用户将共享同一个" +
+        "CLI 数据目录（会话/任务/provider 配置互相可见）。多用户部署务必设置该环境变量，" +
+        "例如 ZCODE_PLATFORM_USERS_ROOT=/data/users",
+    );
+  }
+  // 分享快照按用户隔离：启用隔离后，资源列表/快照只读该用户私有数据目录，
+  // 其他用户的会话/任务/项目一律不可见（修复全局列出所有数据的越权问题）。
+  const globalSnapshot = new ZcodeDataSnapshotReader(configDir);
+  const snapshotForUser = (userId: string): ZcodeDataSnapshotReader | undefined => {
+    if (!usersRoot) return globalSnapshot;
+    if (!userId || userId.includes("..") || userId.includes("/")) return undefined;
+    const userConfigDir = join(platformUserDataPath(usersRoot, userId), ".zcode", "v2");
+    return new ZcodeDataSnapshotReader(userConfigDir);
+  };
+
   // 搜索 MCP server 注册（agent 工具接入）：写入 mcp.json 的 platform-web-search 条目。
   await registerPlatformMcpServers({
     configDir,
@@ -85,7 +106,8 @@ async function main(): Promise<void> {
             authEnabled: true,
             store,
             search,
-            snapshot: new ZcodeDataSnapshotReader(configDir),
+            snapshot: globalSnapshot,
+            snapshotForUser,
             ...(browserExecutor ? { browser: browserExecutor } : {}),
             ...(serviceToken ? { serviceToken } : {}),
           },

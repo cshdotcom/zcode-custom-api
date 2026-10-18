@@ -78,6 +78,7 @@ import { HooksSection } from "@/settings/HooksSection.js";
 import { WorkspaceFileSearchSection } from "@/settings/WorkspaceFileSearchSection.js";
 import { MemorySettingsSection } from "@/settings/MemorySettingsSection.js";
 import { PlatformSection } from "@/settings/PlatformSection.js";
+import { PlatformKnowledgeSection } from "@/settings/PlatformKnowledgeSection.js";
 import { PlatformAdminSection } from "@/settings/PlatformAdminSection.js";
 import { usePlatformUser } from "@/platformUserStore.js";
 import { BrowserSettingsSection } from "@/settings/BrowserSettingsSection.js";
@@ -1990,6 +1991,8 @@ export function SettingsPage({
                           />
                         ) : activeSection === "platform" ? (
                           <PlatformSection />
+                        ) : activeSection === "platformKnowledge" ? (
+                          <PlatformKnowledgeSection />
                         ) : activeSection === "platformAdmin" ? (
                           <PlatformAdminSection />
                         ) : activeSection === "browser" ? (

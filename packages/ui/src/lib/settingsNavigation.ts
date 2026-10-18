@@ -21,6 +21,7 @@ export type SettingsSectionId =
   | "automations"
   | "shortcuts"
   | "platform"
+  | "platformKnowledge"
   | "platformAdmin";
 
 export type SettingsUsageTabTarget = "app" | "codingPlan";

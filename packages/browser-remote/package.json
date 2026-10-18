@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --target node24 --clean",
+    "build": "tsup src/index.ts --format esm --target node24 --clean --dts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
@@ -26,5 +26,6 @@
     "@types/node": "^24.0.0",
     "tsup": "^8.5.0",
     "typescript": "^5.9.0"
-  }
+  },
+  "types": "./dist/index.d.ts"
 }

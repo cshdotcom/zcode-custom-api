@@ -14,6 +14,7 @@ import {
 import {
   Archive,
   Blocks,
+  LibraryBig,
   CalendarClock,
   Clock3,
   Cloud,
@@ -93,6 +94,7 @@ import {
 } from "@/lib/sidebarPurposeSectionPreferences.js";
 import { useShortcutCommandLabel } from "@/shortcuts/useShortcutBindings.js";
 import { setPendingSettingsSectionIntent } from "@/lib/settingsNavigation.js";
+import { usePlatformUser } from "@/platformUserStore.js";
 import { buildTaskWorkspaceKey } from "@/lib/taskQueryCache.js";
 import {
   increaseWorkspaceTaskVisibleLimit,
@@ -268,6 +270,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   onOpenPluginStore,
   automationsActive = false,
   pluginStoreActive = false,
+  platformKnowledgeActive = false,
   onFileTreeOpenChange,
   onWebRemoteTaskOpen,
   onWebRemoteTaskSwitchingChange,
@@ -324,6 +327,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   onOpenPluginStore?: () => void;
   automationsActive?: boolean;
   pluginStoreActive?: boolean;
+  platformKnowledgeActive?: boolean;
   onFileTreeOpenChange?: (open: boolean) => void;
   onWebRemoteTaskOpen?: (options: { crossWorkspace: boolean }) => void;
   onWebRemoteTaskSwitchingChange?: (switching: boolean) => void;
@@ -377,6 +381,8 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   const activateTab = useTabStore((state) => state.activateTab);
   const closeTab = useTabStore((state) => state.closeTab);
   const openSettingsTab = useTabStore((state) => state.openSettingsTab);
+  // 平台用户可用时展示知识库入口（平台未启用 = null，桌面端官方模式不出现）。
+  const platformUserAvailable = usePlatformUser() !== null;
   const expandedWorkspacePaths = useTabStore((state) => state.expandedWorkspacePaths);
   const toggleWorkspaceExpanded = useTabStore((state) => state.toggleWorkspaceExpanded);
   const reorderWorkspaceTabs = useTabStore((state) => state.reorderWorkspaceTabs);
@@ -869,6 +875,12 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   const handleOpenAutomationsMain = useCallback(() => {
     onOpenAutomations?.();
   }, [onOpenAutomations]);
+  // 平台知识库入口：设置 intent 后打开设置页，由 SettingsPage 消费 intent 直达分区。
+  // openSettingsTab 复用上方已有的 tabStore 订阅。
+  const handleOpenPlatformKnowledge = useCallback(() => {
+    setPendingSettingsSectionIntent("platformKnowledge");
+    openSettingsTab();
+  }, [openSettingsTab]);
   const handleOpenCodingPlanUpgrade = useCallback(
     (
       providerId: string,
@@ -1568,6 +1580,24 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
               <Blocks className="size-4" />
               {intl.formatMessage({ id: "workspace.openPluginsSettings" })}
             </Button>
+            {/* 平台知识库入口（OpenWebUI workspace/knowledge 对齐）：平台用户可见，
+                跳设置页「知识库」分区；平台未启用时按钮隐藏。 */}
+            {platformUserAvailable ? (
+              <Button
+                variant="ghost"
+                onClick={handleOpenPlatformKnowledge}
+                data-icon="inline-start"
+                data-testid="platform-knowledge-sidebar-open"
+                size="lg"
+                className={cn(
+                  "w-full justify-start gap-2 text-foreground hover:bg-surface-hover hover:text-foreground",
+                  platformKnowledgeActive && "bg-selected text-foreground",
+                )}
+              >
+                <LibraryBig className="size-4" />
+                {intl.formatMessage({ id: "workspace.openPlatformKnowledge" })}
+              </Button>
+            ) : null}
           </div>
 
           <div className="relative flex min-h-0 flex-1 flex-col">

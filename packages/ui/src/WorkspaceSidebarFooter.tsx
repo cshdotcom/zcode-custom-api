@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import { usePlatform } from "@/hooks/usePlatform.js";
 import { useOpenRewards } from "@/rewards/RewardsProvider.js";
+import { usePlatformUser } from "@/platformUserStore.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { useShortcutCommandLabel } from "@/shortcuts/useShortcutBindings.js";
 import { useZCodeStore } from "@/store/StoreProvider.js";
@@ -133,15 +134,29 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
   const { intl } = useZCodeIntl();
   const platform = usePlatform();
   const openRewards = useOpenRewards();
+  // 平台账号模式（standalone）：官方 z.ai 用户缺位时，页脚改用平台账号身份渲染
+  // （OpenWebUI 侧栏用户菜单对齐：头像/昵称/账号 ID）。
+  const platformUser = usePlatformUser();
+  const effectiveUser: UserInfo | null | undefined =
+    user ??
+    (platformUser
+      ? ({
+          id: platformUser.id,
+          username: platformUser.username,
+          displayName: platformUser.displayName,
+          avatarUrl:
+            platformUser.avatarUrl ?? `/api/platform/users/${platformUser.id}/avatar`,
+        } as UserInfo)
+      : undefined);
   const interfaceMode = useZCodeStore((state) => state.interfaceMode);
   const setInterfaceMode = useZCodeStore((state) => state.setInterfaceMode);
   const zoomInShortcutLabel = useShortcutCommandLabel("zoomIn");
   const zoomOutShortcutLabel = useShortcutCommandLabel("zoomOut");
   const resetZoomShortcutLabel = useShortcutCommandLabel("resetZoom");
   const isRestoringOAuthSession = useZCodeStore((state) => state.isRestoringOAuthSession);
-  const profileBadge = getSidebarProfileBadge(user, intl.formatMessage);
-  const avatarFallbackText = getAvatarFallbackText(user);
-  const avatarKey = user?.avatarUrl ?? user?.id ?? "guest";
+  const profileBadge = getSidebarProfileBadge(effectiveUser, intl.formatMessage);
+  const avatarFallbackText = getAvatarFallbackText(effectiveUser);
+  const avatarKey = effectiveUser?.avatarUrl ?? effectiveUser?.id ?? "guest";
   const showAuthRestoreLoading = !user && isRestoringOAuthSession;
   const usageSummaryState = useWorkspaceSidebarFooterUsageSummaryState({
     enabled: true,
@@ -149,9 +164,9 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
     workspacePath,
   });
   const copyUserId = async () => {
-    if (!user?.id) return;
+    if (!effectiveUser?.id) return;
     try {
-      await navigator.clipboard.writeText(user.id);
+      await navigator.clipboard.writeText(effectiveUser.id);
       toast(intl.formatMessage({ id: "sidebar.profile.userIdCopied" }));
     } catch {
       toast(intl.formatMessage({ id: "sidebar.profile.userIdCopyFailed" }));
@@ -160,9 +175,11 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
   const profileContent = (
     <>
       <Avatar key={avatarKey} size="default">
-        {user?.avatarUrl ? <AvatarImage src={user.avatarUrl} alt={profileBadge} /> : null}
+        {effectiveUser?.avatarUrl ? (
+          <AvatarImage src={effectiveUser.avatarUrl} alt={profileBadge} />
+        ) : null}
         <AvatarFallback className="bg-background text-foreground">
-          {user ? (
+          {effectiveUser ? (
             avatarFallbackText
           ) : showAuthRestoreLoading ? (
             <>
@@ -257,15 +274,15 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
             className="w-max min-w-50 max-w-[calc(100vw-2rem)]"
             forceMount
           >
-            {user ? (
+            {effectiveUser ? (
               <>
                 <div
                   data-testid="profile-menu-header"
                   className="flex max-w-80 items-center gap-2 px-2 py-1.5"
                 >
                   <Avatar key={avatarKey} size="default">
-                    {user.avatarUrl ? (
-                      <AvatarImage src={user.avatarUrl} alt={profileBadge} />
+                    {effectiveUser.avatarUrl ? (
+                      <AvatarImage src={effectiveUser.avatarUrl} alt={profileBadge} />
                     ) : null}
                     <AvatarFallback className="bg-background text-foreground">
                       {avatarFallbackText}
@@ -286,10 +303,10 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
                         <WorkspaceSidebarFooterPlanBadge state={usageSummaryState} />
                       </span>
                     </div>
-                    {user.id ? (
+                    {effectiveUser.id ? (
                       <div className="flex min-w-0 items-center gap-1 text-ui-sm text-foreground-subtle">
                         <span data-testid="profile-menu-id" className="min-w-0 truncate">
-                          {intl.formatMessage({ id: "sidebar.profile.accountId" }, { id: user.id })}
+                          {intl.formatMessage({ id: "sidebar.profile.accountId" }, { id: effectiveUser.id })}
                         </span>
                         <DropdownMenuItem
                           asChild

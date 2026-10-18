@@ -1,10 +1,12 @@
 import type { Context, Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { parseCookieHeader } from "./cookies.js";
 import type { PlatformStore } from "./store.js";
 import { PASSWORD_MIN, type PlatformUser } from "./store.js";
 import { SearchService, SEARCH_PROVIDERS } from "./search.js";
 import type { RemoteBrowserExecutor } from "@zcode/browser-remote";
 import { ZcodeDataSnapshotReader } from "./snapshot.js";
+import { extractDocumentText } from "./extract.js";
 import { shareViewPageHtml } from "./pages.js";
 
 /**
@@ -25,22 +27,38 @@ import { shareViewPageHtml } from "./pages.js";
 
 export const PLATFORM_SESSION_COOKIE = "zcode_platform_session";
 
+/** 平台 Hono 环境变量：中间件写入当前会话用户，路由读取。 */
+export interface PlatformEnv {
+  Variables: { platformUser: PlatformUser | undefined };
+}
+
+type PlatformContext = Context<PlatformEnv>;
+
 export interface PlatformDeps {
   /** 平台用户存储；未启用平台登录（ZCODE_PLATFORM_AUTH=1）时省略。 */
   store?: PlatformStore;
   search: SearchService;
   browser?: RemoteBrowserExecutor;
-  /** ZCode 数据快照读取器（分享功能），平台开启时必传。 */
+  /** ZCode 数据快照读取器（分享功能）：全局实例（未启用每用户隔离时的回退）。 */
   snapshot?: ZcodeDataSnapshotReader;
+  /**
+   * 每用户隔离快照工厂：启用 ZCODE_PLATFORM_USERS_ROOT 后按用户实例化，
+   * 资源列表/快照只读该用户私有数据目录（OpenWebUI 每用户隔离语义）。
+   */
+  snapshotForUser?: (userId: string) => ZcodeDataSnapshotReader | undefined;
   /** 内部服务 Bearer Token（搜索 MCP server 等）。 */
   serviceToken?: string;
 }
 
-function jsonError(c: Context, message: string, status = 400): Response {
+function jsonError(
+  c: PlatformContext,
+  message: string,
+  status: ContentfulStatusCode = 400,
+): Response {
   return c.json({ error: message }, status);
 }
 
-async function readJson(c: Context): Promise<Record<string, unknown>> {
+async function readJson(c: PlatformContext): Promise<Record<string, unknown>> {
   try {
     const body = (await c.req.json()) as unknown;
     return typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
@@ -49,13 +67,13 @@ async function readJson(c: Context): Promise<Record<string, unknown>> {
   }
 }
 
-function sessionFromRequest(c: Context, store: PlatformStore): PlatformUser | undefined {
+function sessionFromRequest(c: PlatformContext, store: PlatformStore): PlatformUser | undefined {
   const cookies = parseCookieHeader(c.req.header("cookie"));
   const token = cookies.get(PLATFORM_SESSION_COOKIE);
   return store.getSession(token)?.user;
 }
 
-function bearerFromRequest(c: Context): string | undefined {
+function bearerFromRequest(c: PlatformContext): string | undefined {
   const header = c.req.header("authorization");
   if (!header?.startsWith("Bearer ")) return undefined;
   const value = header.slice(7).trim();
@@ -68,7 +86,7 @@ const SHARE_PUBLIC_API_RE = /^\/api\/platform\/shares\/public\/([A-Za-z0-9_-]+)\
 const INVITE_VALIDATE_RE = /^\/api\/platform\/auth\/invite\/([A-Za-z0-9]+)\/?$/;
 
 export function createPlatformAuthMiddleware(deps: PlatformDeps) {
-  return async (c: Context, next: () => Promise<void>) => {
+  return async (c: PlatformContext, next: () => Promise<void>) => {
     if (!deps.store) {
       await next();
       return;
@@ -121,29 +139,29 @@ export function createPlatformAuthMiddleware(deps: PlatformDeps) {
   };
 }
 
-function setSessionCookie(c: Context, token: string): void {
+function setSessionCookie(c: PlatformContext, token: string): void {
   c.header(
     "Set-Cookie",
     `${PLATFORM_SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`,
   );
 }
 
-export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
+export function registerPlatformRoutes(app: Hono<PlatformEnv>, deps: PlatformDeps): void {
   const { search } = deps;
-  const requireStore = (c: Context): PlatformStore | Response => {
+  const requireStore = (c: PlatformContext): PlatformStore | Response => {
     if (!deps.store) return jsonError(c, "平台用户系统未启用（设置 ZCODE_PLATFORM_AUTH=1 开启）", 403);
     return deps.store;
   };
-  const requireAdmin = (c: Context): PlatformUser | Response => {
+  const requireAdmin = (c: PlatformContext): PlatformUser | Response => {
     const user = c.get("platformUser") as PlatformUser | undefined;
     if (user?.role !== "admin") return jsonError(c, "需要管理员权限", 403);
     return user;
   };
-  const storeOf = (c: Context): PlatformStore | undefined => {
+  const storeOf = (c: PlatformContext): PlatformStore | undefined => {
     const store = requireStore(c);
     return store instanceof Response ? undefined : store;
   };
-  const adminOf = (c: Context): PlatformUser | undefined => {
+  const adminOf = (c: PlatformContext): PlatformUser | undefined => {
     const admin = requireAdmin(c);
     return admin instanceof Response ? undefined : admin;
   };
@@ -275,6 +293,74 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
         canSharePublicly: active && deps.store.hasPermission(user, "sharing.public"),
       },
       ...(user.displayName ? { displayName: user.displayName } : {}),
+      ...(user.email ? { email: user.email } : {}),
+      ...(user.bio ? { bio: user.bio } : {}),
+      ...(user.avatarUrl ? { avatarUrl: user.avatarUrl } : {}),
+    });
+  });
+
+  // ---------- 个人资料（OpenWebUI Account 页对应） ----------
+  app.post("/api/platform/auth/update-profile", async (c) => {
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!deps.store || !user) return jsonError(c, "Unauthorized", 401);
+    if (user.status !== "active") return jsonError(c, "账号不可用", 403);
+    const body = await readJson(c);
+    try {
+      const updated = deps.store.updateProfile(user.id, {
+        ...(body.displayName !== undefined ? { displayName: String(body.displayName ?? "") } : {}),
+        ...(body.email !== undefined ? { email: String(body.email ?? "") } : {}),
+        ...(body.bio !== undefined ? { bio: String(body.bio ?? "") } : {}),
+        ...(body.avatarUrl !== undefined
+          ? { avatarUrl: body.avatarUrl ? String(body.avatarUrl) : null }
+          : {}),
+      });
+      if (!updated) return jsonError(c, "用户不存在", 404);
+      deps.store.recordEvent("auth.update_profile", updated);
+      return c.json({ ok: true, user: { ...updated, password_hash: undefined, salt: undefined } });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  /** 头像服务（OpenWebUI GET /users/{id}/profile/image 对应）：data-URI 解码输出，
+   *  未设置时回退姓名首字母 SVG 占位。 */
+  const initialsAvatarSvg = (seed: string): string => {
+    const name = seed.trim() || "?";
+    const parts = name.split(/\s+/).filter(Boolean);
+    const initials =
+      (parts[0]?.[0] ?? "?") + (parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "");
+    const escaped = initials
+      .toUpperCase()
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120"><rect width="120" height="120" rx="60" fill="#F39C12"/><text x="60" y="60" dy="0.36em" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="48" fill="#ffffff">${escaped}</text></svg>`;
+  };
+
+  app.get("/api/platform/users/:id/avatar", (c) => {
+    if (!deps.store) return jsonError(c, "平台用户系统未启用", 403);
+    const requester = c.get("platformUser") as PlatformUser | undefined;
+    if (!requester) return jsonError(c, "Unauthorized", 401);
+    const userId = c.req.param("id") ?? "";
+    const target = deps.store.getUser(userId);
+    if (!target) return jsonError(c, "用户不存在", 404);
+    const dataUri = deps.store.getAvatarUrl(userId);
+    if (dataUri) {
+      const match = /^data:(image\/(png|jpeg|gif|webp));base64,(.+)$/.exec(dataUri);
+      if (match) {
+        const buffer = Buffer.from(match[3]!, "base64");
+        return c.body(new Uint8Array(buffer), 200, {
+          "Content-Type": match[1]!,
+          "Cache-Control": "no-cache",
+          "X-Content-Type-Options": "nosniff",
+        });
+      }
+    }
+    const label = target.displayName || target.username;
+    return c.body(initialsAvatarSvg(label), 200, {
+      "Content-Type": "image/svg+xml; charset=utf-8",
+      "Cache-Control": "no-cache",
+      "X-Content-Type-Options": "nosniff",
     });
   });
 
@@ -296,7 +382,7 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
   // ---------- 旧平台独立页面入口：全部收敛到 SPA 内原生界面 ----------
   // 登录页/管理控制台/分享中心已分别融合为 SPA 登录门与设置页「平台中心」「平台管理」
   // 分区，这里仅保留 302 兼容旧链接与收藏夹。
-  const redirectLegacyPlatformPage = (c: Context) => c.redirect("/", 302);
+  const redirectLegacyPlatformPage = (c: PlatformContext) => c.redirect("/", 302);
   app.get("/login", redirectLegacyPlatformPage);
   app.get("/platform/admin", redirectLegacyPlatformPage);
   app.get("/platform/shares", redirectLegacyPlatformPage);
@@ -395,7 +481,7 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
 
   // ---------- OpenAI 兼容个人网关（sk-zc- 令牌鉴权 → 上游透传） ----------
 
-  const gatewayAuth = (c: Context): { store: PlatformStore; userId: string } | Response => {
+  const gatewayAuth = (c: PlatformContext): { store: PlatformStore; userId: string } | Response => {
     const store = deps.store;
     if (!store) return jsonError(c, "平台用户系统未启用", 403);
     const config = store.getConfig();
@@ -676,21 +762,27 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
   });
 
   // ---------- 分享：创建 / 管理（需会话 + chat.share 权限） ----------
-  const shareUser = (c: Context): PlatformUser | undefined => {
+  const shareUser = (c: PlatformContext): PlatformUser | undefined => {
     const user = c.get("platformUser") as PlatformUser | undefined;
     if (!deps.store || !user) return undefined;
     if (user.role !== "admin" && !deps.store.hasPermission(user, "chat.share")) return undefined;
     return user;
   };
 
+  // 按用户取快照读取器：隔离启用时只读该用户私有数据，未启用回退全局读取器。
+  const snapshotFor = (userId: string): ZcodeDataSnapshotReader | undefined =>
+    deps.snapshotForUser ? deps.snapshotForUser(userId) : deps.snapshot;
+
   app.get("/api/platform/resources", (c) => {
     const user = shareUser(c);
-    if (!user || !deps.snapshot) return jsonError(c, user ? "快照服务不可用" : "需要分享权限", 403);
-    const availability = deps.snapshot.available;
+    if (!user) return jsonError(c, "需要分享权限", 403);
+    const reader = snapshotFor(user.id);
+    if (!reader) return jsonError(c, "快照服务不可用", 403);
+    const availability = reader.available;
     return c.json({
-      sessions: availability.sessions ? deps.snapshot.listSessions(100) : [],
-      tasks: availability.tasks ? deps.snapshot.listTasks(100) : [],
-      projects: availability.tasks ? deps.snapshot.listProjects(50) : [],
+      sessions: availability.sessions ? reader.listSessions(100) : [],
+      tasks: availability.tasks ? reader.listTasks(100) : [],
+      projects: availability.tasks ? reader.listProjects(50) : [],
     });
   });
 
@@ -709,7 +801,8 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
     if (store instanceof Response) return store;
     const user = shareUser(c);
     if (!user) return jsonError(c, "需要分享权限", 403);
-    if (!deps.snapshot) return jsonError(c, "快照服务不可用", 503);
+    const reader = snapshotFor(user.id);
+    if (!reader) return jsonError(c, "快照服务不可用", 503);
     const body = await readJson(c);
     const resourceType = String(body.resourceType ?? "");
     const resourceId = String(body.resourceId ?? "").trim();
@@ -722,7 +815,9 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
     if (visibility === "open" && user.role !== "admin" && !store.hasPermission(user, "sharing.public")) {
       return jsonError(c, "没有公开分享权限（sharing.public）", 403);
     }
-    const snapshot = deps.snapshot.snapshot(resourceType as "session" | "task" | "project", resourceId);
+    // 只能从当前用户自己的数据目录生成快照：隔离启用后他人资源在本用户库中
+    // 根本不存在（404），未隔离时也不允许读全局库中不属于自己的资源。
+    const snapshot = reader.snapshot(resourceType as "session" | "task" | "project", resourceId);
     if (!snapshot) return jsonError(c, "资源不存在或没有可分享的内容", 404);
     const title = "title" in snapshot ? String(snapshot.title) : "(未命名)";
     try {
@@ -759,8 +854,10 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
       }
       store.updateShareVisibility(share.token, visibility);
     }
-    if (body.refresh === true && deps.snapshot) {
-      const snapshot = deps.snapshot.snapshot(share.resourceType, share.resourceId);
+    if (body.refresh === true) {
+      // 刷新快照用分享属主自己的读取器（admin 代刷时同样读属主数据）。
+      const ownerReader = snapshotFor(share.ownerId);
+      const snapshot = ownerReader?.snapshot(share.resourceType, share.resourceId);
       if (snapshot) store.updateShareSnapshot(share.token, snapshot);
     }
     return c.json({ ok: true });
@@ -781,11 +878,11 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
 
   // ---------- 分享：公开访问 ----------
   const readPublicShare = (
-    c: Context,
+    c: PlatformContext,
   ): { ok: true; share: ReturnType<PlatformStore["getShare"]> } | { ok: false; response: Response } => {
     const store = requireStore(c);
     if (store instanceof Response) return { ok: false, response: store };
-    const token = c.req.param("token");
+    const token = c.req.param("token") ?? "";
     const share = store.getShare(token);
     if (!share) return { ok: false, response: jsonError(c, "分享不存在或已被删除", 404) };
     if (share.visibility !== "open") {
@@ -819,7 +916,7 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
   });
 
   // ---------- 联网搜索（会话或内部服务 Token） ----------
-  const searchAuth = (c: Context): boolean => {
+  const searchAuth = (c: PlatformContext): boolean => {
     const user = c.get("platformUser") as PlatformUser | undefined;
     if (user) return true;
     const token = bearerFromRequest(c);
@@ -871,7 +968,7 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
   // ---------- 对外 OpenWebUI 兼容端点（/search） ----------
   // GET /search?q=&format=json  → SearXNG 引擎格式
   // POST /search {query, count} → OpenWebUI external 模式格式（[{link,title,snippet}]）
-  const publicSearchAuthorized = (c: Context): boolean => {
+  const publicSearchAuthorized = (c: PlatformContext): boolean => {
     const requiredToken = search.config.apiToken?.trim();
     if (!requiredToken) return true;
     const bearer = bearerFromRequest(c);
@@ -996,20 +1093,30 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
     }
   });
 
-  // ---------- 知识库（管理员维护；agent 经 platform-knowledge MCP 检索） ----------
-  app.get("/api/platform/kb", (c) => {
+  // ---------- 知识库（用户级：OpenWebUI workspace/knowledge 对应；agent 经 platform-knowledge MCP 检索） ----------
+  // 每用户隔离：普通用户只看/只建/只删自己的文档；admin 全库可见。
+  const kbScopeOwner = (c: PlatformContext): { user: PlatformUser; ownerId?: string } | Response => {
     const store = requireStore(c);
     if (store instanceof Response) return store;
-    const _admin = requireAdmin(c);
-    if (_admin instanceof Response) return _admin;
-    return c.json({ docs: store.listKbDocs() });
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized", 401);
+    if (user.status !== "active") return jsonError(c, "账号不可用", 403);
+    return { user, ...(user.role === "admin" ? {} : { ownerId: user.id }) };
+  };
+
+  app.get("/api/platform/kb", (c) => {
+    const scope = kbScopeOwner(c);
+    if (scope instanceof Response) return scope;
+    const store = deps.store!;
+    return c.json({
+      docs: store.listKbDocs({ ...(scope.ownerId ? { ownerId: scope.ownerId } : {}) }),
+    });
   });
 
   app.post("/api/platform/kb", async (c) => {
-    const store = requireStore(c);
-    if (store instanceof Response) return store;
-    const admin = requireAdmin(c);
-    if (admin instanceof Response) return admin;
+    const scope = kbScopeOwner(c);
+    if (scope instanceof Response) return scope;
+    const store = deps.store!;
     const body = await readJson(c);
     const title = String(body.title ?? "").trim();
     const content = String(body.content ?? "");
@@ -1022,39 +1129,85 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
         title: title.slice(0, 200),
         ...(filename ? { filename } : {}),
         content,
-        ownerId: admin.id,
+        ownerId: scope.user.id,
       });
-      store.recordEvent("kb.create", admin, title);
+      store.recordEvent("kb.create", scope.user, title);
       return c.json({ doc });
     } catch (error) {
       return jsonError(c, error instanceof Error ? error.message : String(error));
     }
   });
 
+  // multipart 上传（OpenWebUI POST /files/ 对应）：txt/md/code 直读、docx 解包、
+  // pdf 尽力提取；入库后自动分块 + FTS 索引。
+  app.post("/api/platform/kb/upload", async (c) => {
+    const scope = kbScopeOwner(c);
+    if (scope instanceof Response) return scope;
+    const store = deps.store!;
+    let form: Record<string, string | File>;
+    try {
+      form = await c.req.parseBody();
+    } catch {
+      return jsonError(c, "需要 multipart/form-data 请求");
+    }
+    const part = form.file;
+    if (!part || typeof part === "string") return jsonError(c, "缺少文件字段 file");
+    const rawName = (part as File).name || "untitled.txt";
+    const safeName = rawName.replace(/[/\\]/g, "_").slice(0, 260);
+    const buffer = Buffer.from(await (part as File).arrayBuffer());
+    if (buffer.length === 0) return jsonError(c, "文件为空");
+    if (buffer.length > 20 * 1024 * 1024) return jsonError(c, "文件过大（上限 20MB）", 413);
+    try {
+      const extracted = await extractDocumentText(safeName, buffer);
+      if (!extracted.text.trim()) return jsonError(c, "未能从文件中提取到文本");
+      if (extracted.text.length > 4_000_000) {
+        return jsonError(c, "提取后的文本超过 4MB 上限，请拆分文件", 413);
+      }
+      const title = safeName.replace(/\.[^.]+$/, "").slice(0, 200) || safeName.slice(0, 200);
+      const doc = store.createKbDoc({
+        title,
+        filename: safeName,
+        content: extracted.text,
+        ownerId: scope.user.id,
+      });
+      store.recordEvent("kb.upload", scope.user, `${safeName} (${extracted.engine}, ${extracted.text.length} 字符)`);
+      return c.json({ doc, engine: extracted.engine, textLength: extracted.text.length });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 422);
+    }
+  });
+
   app.delete("/api/platform/kb/:id", (c) => {
-    const store = requireStore(c);
-    if (store instanceof Response) return store;
-    const admin = requireAdmin(c);
-    if (admin instanceof Response) return admin;
-    store.deleteKbDoc(c.req.param("id"));
-    store.recordEvent("kb.delete", admin, c.req.param("id"));
+    const scope = kbScopeOwner(c);
+    if (scope instanceof Response) return scope;
+    const store = deps.store!;
+    const id = c.req.param("id") ?? "";
+    // 归属校验：普通用户只能删自己的文档（OpenWebUI write access 语义）。
+    if (scope.ownerId) {
+      const owner = store.getKbDocOwner(id);
+      if (!owner) return jsonError(c, "文档不存在", 404);
+      if (owner !== scope.ownerId) return jsonError(c, "只能删除自己上传的文档", 403);
+    }
+    store.deleteKbDoc(id);
+    store.recordEvent("kb.delete", scope.user, id);
     return c.json({ ok: true });
   });
 
-  // 知识库检索：会话用户或内部服务令牌（MCP server 用）。
+  // 知识库检索：会话用户（普通用户仅自己的文档）或内部服务令牌（MCP server 用，全库）。
   app.get("/api/platform/kb/search", (c) => {
     const store = requireStore(c);
     if (store instanceof Response) return store;
     const user = c.get("platformUser") as PlatformUser | undefined;
     const bearer = bearerFromRequest(c);
+    const isService = Boolean(deps.serviceToken && bearer === deps.serviceToken);
     const authorized =
-      user?.role === "user" ||
-      user?.role === "admin" ||
-      (deps.serviceToken && bearer === deps.serviceToken);
+      user?.role === "user" || user?.role === "admin" || isService;
     if (!authorized) return jsonError(c, "Unauthorized", 401);
     const query = c.req.query("q") ?? c.req.query("query") ?? "";
     const limit = Number(c.req.query("limit") ?? "") || undefined;
-    return c.json({ hits: store.searchKb(query, limit) });
+    // 普通用户只检索自己的文档；admin / 内部服务令牌全库检索。
+    const ownerId = !isService && user && user.role !== "admin" ? user.id : undefined;
+    return c.json({ hits: store.searchKb(query, limit, { ...(ownerId ? { ownerId } : {}) }) });
   });
 
   // ---------- 用量统计与审计日志（管理员） ----------

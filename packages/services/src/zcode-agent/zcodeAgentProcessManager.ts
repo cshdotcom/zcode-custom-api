@@ -38,6 +38,7 @@ import type { ZCodeAgentPresentationSurface } from "./zcodeAgentPresentationSurf
 import { shouldSpawnInDetachedProcessGroup } from "../process/processTreeTerminator.js";
 import type { RuntimeProcessLifecycleReporter } from "../process/runtimeProcessLifecycle.js";
 import { buildAgentWorkspaceIdentityEnv } from "../runtime-tools/agentProxyEnv.js";
+import { buildPlatformUserIsolationEnv } from "./platformIsolation.js";
 
 export interface ZCodeAgentCommand {
   /** 本地配套 CLI bundle 的存储专用 Worker 入口；远端/自定义命令不推断能力。 */
@@ -1040,6 +1041,9 @@ export class ZCodeAgentProcessManager {
         // 身份/隔离语义使用 workspaceIdentity；cwd 继续使用 workspacePath。
         ...buildAgentWorkspaceIdentityEnv(params.workspaceIdentity),
         ...buildE2EAgentCoverageEnv(),
+        // 平台每用户数据隔离（最后写入，覆盖全局 data root）：workspacePath 位于
+        // ZCODE_PLATFORM_USERS_ROOT 下时，CLI 会话库/任务索引/配置全部落入用户私有目录。
+        ...buildPlatformUserIsolationEnv(params.workspacePath),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

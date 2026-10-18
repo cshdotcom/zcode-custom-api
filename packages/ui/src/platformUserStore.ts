@@ -17,6 +17,12 @@ export interface PlatformUserInfo {
   role: PlatformUserRole;
   status: PlatformUserStatus;
   displayName?: string;
+  /** 邮箱（可选）。 */
+  email?: string;
+  /** 个人简介。 */
+  bio?: string;
+  /** 头像 data-URI（OpenWebUI 同款；未设置时用 /api/platform/users/{id}/avatar 占位）。 */
+  avatarUrl?: string;
   permissions: {
     canShare: boolean;
     canSharePublicly: boolean;

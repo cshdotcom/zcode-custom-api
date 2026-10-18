@@ -46,6 +46,20 @@ export interface PlatformSectionCopy {
   confirmNewPassword: string;
   updatePasswordAction: string;
   passwordUpdated: string;
+  profileTitle: string;
+  profileDescription: string;
+  avatarUpload: string;
+  avatarRemove: string;
+  avatarTooLarge: string;
+  avatarUnsupported: string;
+  profileDisplayName: string;
+  profileDisplayNamePlaceholder: string;
+  profileEmail: string;
+  profileEmailPlaceholder: string;
+  profileBio: string;
+  profileBioPlaceholder: string;
+  profileSaved: string;
+  profileSaveAction: string;
   sharesTitle: string;
   sharesDescription: string;
   shareEmpty: string;
@@ -243,6 +257,20 @@ const PLATFORM_SECTION_COPY = {
     confirmNewPassword: "确认新密码",
     updatePasswordAction: "更新密码",
     passwordUpdated: "密码已更新",
+    profileTitle: "个人资料",
+    profileDescription: "头像、昵称、邮箱与个人简介。",
+    avatarUpload: "上传头像",
+    avatarRemove: "移除头像",
+    avatarTooLarge: "头像过大（上限 512KB），请压缩后重试",
+    avatarUnsupported: "仅支持 png / jpeg / gif / webp 图片",
+    profileDisplayName: "显示名称",
+    profileDisplayNamePlaceholder: "显示名称（可选）",
+    profileEmail: "邮箱",
+    profileEmailPlaceholder: "邮箱（可选）",
+    profileBio: "个人简介",
+    profileBioPlaceholder: "介绍一下自己（可选）",
+    profileSaved: "资料已更新",
+    profileSaveAction: "保存资料",
     sharesTitle: "我的分享",
     sharesDescription: "对话 / 任务 / 项目的快照分享链接，公开分享无需登录即可访问。",
     shareEmpty: "还没有分享。在工作台中选择资源创建分享链接。",
@@ -315,6 +343,20 @@ const PLATFORM_SECTION_COPY = {
     confirmNewPassword: "Confirm new password",
     updatePasswordAction: "Update Password",
     passwordUpdated: "Password updated",
+    profileTitle: "Profile",
+    profileDescription: "Avatar, display name, email and bio.",
+    avatarUpload: "Upload Photo",
+    avatarRemove: "Remove Photo",
+    avatarTooLarge: "Photo too large (max 512KB). Please compress it.",
+    avatarUnsupported: "Only png / jpeg / gif / webp images are supported",
+    profileDisplayName: "Display Name",
+    profileDisplayNamePlaceholder: "Display name (optional)",
+    profileEmail: "Email",
+    profileEmailPlaceholder: "Email (optional)",
+    profileBio: "Bio",
+    profileBioPlaceholder: "Tell us about yourself (optional)",
+    profileSaved: "Profile updated",
+    profileSaveAction: "Save Profile",
     sharesTitle: "My Shares",
     sharesDescription: "Snapshot share links for conversations / tasks / projects. Public links need no sign-in.",
     shareEmpty: "No shares yet. Create one from the workbench.",

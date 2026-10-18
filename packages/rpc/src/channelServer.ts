@@ -233,7 +233,12 @@ export class ChannelServer<TContext = string> implements IChannelServer<TContext
     }
 
     const timer = setTimeout(() => {
-      console.error(`Unknown channel: ${request.channelName}`);
+      // web 部署没有桌面 Host，window-controller 等桌面专属频道不存在属预期行为，
+      // 静默跳过避免每次页面加载都打出误导性报错。
+      const benignMissingChannel = request.channelName === "window-controller";
+      if (!benignMissingChannel) {
+        console.error(`Unknown channel: ${request.channelName}`);
+      }
       if (request.type !== RequestType.Promise) {
         return;
       }

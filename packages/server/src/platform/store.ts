@@ -34,6 +34,12 @@ export interface PlatformUser {
   status: PlatformUserStatus;
   createdAt: number;
   lastLoginAt?: number;
+  /** 邮箱（可选，OpenWebUI user.email 对应）。 */
+  email?: string;
+  /** 个人简介（OpenWebUI user.bio 对应）。 */
+  bio?: string;
+  /** 头像：data-URI（OpenWebUI profile_image_url 同款，无文件系统依赖）。 */
+  avatarUrl?: string;
 }
 
 export interface PlatformSession {
@@ -113,6 +119,8 @@ export interface PlatformKbDoc {
   size: number;
   chunkCount: number;
   createdAt: number;
+  ownerId?: string;
+  ownerUsername?: string;
 }
 
 export interface PlatformKbHit {
@@ -151,6 +159,9 @@ interface UserRow {
   last_login_at: number | null;
   password_hash: string;
   salt: string;
+  email?: string | null;
+  bio?: string | null;
+  avatar_url?: string | null;
 }
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -170,7 +181,7 @@ export const DEFAULT_USER_PERMISSIONS: Record<string, boolean> = {
 };
 
 export class PlatformStore {
-  readonly #db: DatabaseSync;
+  readonly #db: InstanceType<typeof DatabaseSync>;
   readonly #filePath: string;
   #ftsEnabled = false;
 
@@ -295,6 +306,14 @@ export class PlatformStore {
     } catch {
       this.#ftsEnabled = false;
     }
+    // 用户表资料列迁移（OpenWebUI Account 页对应字段；旧库幂等补列）。
+    for (const column of ["email TEXT", "bio TEXT", "avatar_url TEXT"]) {
+      try {
+        this.#db.exec(`ALTER TABLE users ADD COLUMN ${column};`);
+      } catch {
+        // 列已存在时忽略（SQLite ALTER 无 IF NOT EXISTS）。
+      }
+    }
   }
 
   get filePath(): string {
@@ -416,7 +435,7 @@ export class PlatformStore {
   }
 
   listUsers(): PlatformUser[] {
-    const rows = this.#db.prepare("SELECT * FROM users ORDER BY created_at ASC").all() as UserRow[];
+    const rows = this.#db.prepare("SELECT * FROM users ORDER BY created_at ASC").all() as unknown as UserRow[];
     return rows.map((row) => this.#rowToUser(row));
   }
 
@@ -431,6 +450,71 @@ export class PlatformStore {
     // 审批通过 / 降级后同步清理会话，让角色变更即时生效。
     this.deleteSessionsForUser(id);
     return this.getUser(id);
+  }
+
+  /**
+   * 更新个人资料（OpenWebUI POST /auths/update/profile 对应）。
+   * 头像仅接受 data:image/(png|jpeg|gif|webp);base64 格式（SVG 拒绝防脚本注入，
+   * 对齐 OpenWebUI validate_image_url 白名单语义），上限 512KB。
+   */
+  updateProfile(
+    id: string,
+    patch: {
+      displayName?: string;
+      email?: string | null;
+      bio?: string | null;
+      avatarUrl?: string | null;
+    },
+  ): PlatformUser | undefined {
+    const existing = this.getUser(id);
+    if (!existing) return undefined;
+    const avatar = patch.avatarUrl !== undefined ? patch.avatarUrl : undefined;
+    if (avatar) {
+      if (avatar.length > 512 * 1024) {
+        throw new Error("头像过大（上限 512KB），请压缩后重试");
+      }
+      if (!/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(avatar)) {
+        throw new Error("头像格式不支持：仅接受 png/jpeg/gif/webp data-URI");
+      }
+    }
+    if (patch.email !== undefined && patch.email && patch.email.trim()) {
+      const email = patch.email.trim();
+      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        throw new Error("邮箱格式不正确");
+      }
+      const taken = this.#db
+        .prepare("SELECT id FROM users WHERE email = ? AND id != ?")
+        .get(email, id);
+      if (taken) throw new Error("邮箱已被其他账号使用");
+    }
+    this.#db
+      .prepare(
+        `UPDATE users SET
+           display_name = ?,
+           email = ?,
+           bio = ?,
+           avatar_url = ?
+         WHERE id = ?`,
+      )
+      .run(
+        // undefined = 不变；显式空串/null = 清除（账号页“移除头像”依赖此语义）。
+        patch.displayName !== undefined
+          ? (patch.displayName?.trim() || null)
+          : (existing.displayName ?? null),
+        patch.email !== undefined ? (patch.email?.trim() || null) : (existing.email ?? null),
+        patch.bio !== undefined ? (patch.bio?.trim() || null) : (existing.bio ?? null),
+        patch.avatarUrl !== undefined ? (patch.avatarUrl || null) : (existing.avatarUrl ?? null),
+        id,
+      );
+    return this.getUser(id);
+  }
+
+  /** 读取头像 data-URI（/avatar 端点用）；未设置返回 undefined。 */
+  getAvatarUrl(id: string): string | undefined {
+    const row = this.#db.prepare("SELECT avatar_url FROM users WHERE id = ?").get(id) as
+      | { avatar_url: string | null }
+      | undefined;
+    return row?.avatar_url ?? undefined;
   }
 
   resetPassword(id: string, newPassword: string): void {
@@ -1075,14 +1159,25 @@ export class PlatformStore {
     return this.#getKbDocOrThrow(id);
   }
 
-  listKbDocs(): PlatformKbDoc[] {
-    return (
-      this.#db.prepare("SELECT * FROM kb_docs ORDER BY created_at DESC").all() as Array<{
+  /** 知识库列表（用户级隔离：普通用户仅自己创建的，admin 全部可见）。 */
+  listKbDocs(options?: { ownerId?: string }): PlatformKbDoc[] {
+    const scoped = Boolean(options?.ownerId);
+    const rows = (
+      this.#db
+        .prepare(
+          `SELECT d.*, u.username AS owner_username FROM kb_docs d
+           LEFT JOIN users u ON u.id = d.owner_id
+           ${scoped ? "WHERE d.owner_id = ?" : ""}
+           ORDER BY d.created_at DESC`,
+        )
+        .all(...(scoped ? [options!.ownerId!] : [])) as Array<{
         id: string;
         title: string;
         filename: string | null;
         size: number;
         chunk_count: number;
+        owner_id: string | null;
+        owner_username: string | null;
         created_at: number;
       }>
     ).map((row) => ({
@@ -1092,7 +1187,17 @@ export class PlatformStore {
       size: Number(row.size),
       chunkCount: Number(row.chunk_count),
       createdAt: Number(row.created_at),
+      ...(row.owner_id ? { ownerId: row.owner_id } : {}),
+      ...(row.owner_username ? { ownerUsername: row.owner_username } : {}),
     }));
+    return rows;
+  }
+
+  getKbDocOwner(id: string): string | undefined {
+    const row = this.#db.prepare("SELECT owner_id FROM kb_docs WHERE id = ?").get(id) as
+      | { owner_id: string | null }
+      | undefined;
+    return row?.owner_id ?? undefined;
   }
 
   deleteKbDoc(id: string): void {
@@ -1110,9 +1215,12 @@ export class PlatformStore {
     }
   }
 
-  searchKb(query: string, limit = 6): PlatformKbHit[] {
+  searchKb(query: string, limit = 6, options?: { ownerId?: string }): PlatformKbHit[] {
     const trimmed = query.trim();
     if (!trimmed) return [];
+    // 用户级隔离：普通用户只能检索自己创建的文档（OpenWebUI knowledge 语义）。
+    const scopeJoin = options?.ownerId ? "AND d.owner_id = ?" : "";
+    const scopeParams = options?.ownerId ? [options.ownerId] : [];
     if (this.#ftsEnabled) {
       // FTS5 MATCH：把查询词按空白拆分后做 AND 组合，避免原始语法报错。
       // 注意 unicode61 分词器对连续 CJK 文本切分粒度很粗，中文短词常命中 0 行，
@@ -1124,9 +1232,9 @@ export class PlatformStore {
       try {
         const rows = this.#db
           .prepare(
-            "SELECT d.id AS doc_id, d.title AS doc_title, snippet(kb_fts, 0, '…', '…', '…', 12) AS snip FROM kb_fts JOIN kb_docs d ON d.id = kb_fts.doc_id WHERE kb_fts MATCH ? LIMIT ?",
+            "SELECT d.id AS doc_id, d.title AS doc_title, snippet(kb_fts, 0, '…', '…', '…', 12) AS snip FROM kb_fts JOIN kb_docs d ON d.id = kb_fts.doc_id WHERE kb_fts MATCH ? ${scopeJoin} LIMIT ?",
           )
-          .all(matchQuery, limit) as Array<{
+          .all(matchQuery, ...scopeParams, limit) as Array<{
           doc_id: string;
           doc_title: string;
           snip: string;
@@ -1141,9 +1249,11 @@ export class PlatformStore {
     const like = `%${trimmed.replace(/[%_]/g, " ")}%`;
     const rows = this.#db
       .prepare(
-        "SELECT DISTINCT d.id AS doc_id, d.title AS doc_title, c.content AS content FROM kb_chunks c JOIN kb_docs d ON d.id = c.doc_id WHERE c.content LIKE ? LIMIT ?",
+        `SELECT DISTINCT d.id AS doc_id, d.title AS doc_title, c.content AS content
+         FROM kb_chunks c JOIN kb_docs d ON d.id = c.doc_id
+         WHERE c.content LIKE ? ${scopeJoin} LIMIT ?`,
       )
-      .all(like, limit) as Array<{ doc_id: string; doc_title: string; content: string }>;
+      .all(like, ...scopeParams, limit) as Array<{ doc_id: string; doc_title: string; content: string }>;
     return rows.map((row) => ({
       docId: row.doc_id,
       docTitle: row.doc_title,
@@ -1357,6 +1467,9 @@ export class PlatformStore {
       status: row.status as PlatformUserStatus,
       createdAt: Number(row.created_at),
       ...(row.last_login_at ? { lastLoginAt: Number(row.last_login_at) } : {}),
+      ...(row.email ? { email: row.email } : {}),
+      ...(row.bio ? { bio: row.bio } : {}),
+      ...(row.avatar_url ? { avatarUrl: row.avatar_url } : {}),
     };
   }
 }

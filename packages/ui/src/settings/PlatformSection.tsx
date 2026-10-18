@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { Badge } from "@/components/ui/badge.js";
 import { Input } from "@/components/ui/input.js";
@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch.js";
 import { Spinner } from "@/components/ui/spinner.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
-import { usePlatformUser } from "@/platformUserStore.js";
+import { setPlatformUser, usePlatformUser } from "@/platformUserStore.js";
 import {
   PlatformApiError,
   platformApi,
@@ -32,6 +32,42 @@ function formatDateTime(value: number | undefined, locale: string): string {
   }
 }
 
+/**
+ * 头像选择处理（OpenWebUI UserProfileImage 同款）：FileReader 读图 → canvas
+ * 居中裁剪 250×250 → webp(0.8) data-URI。服务端仅接受该四类 data-URI。
+ */
+async function readAvatarAsDataUri(file: File): Promise<string> {
+  const allowed = ["image/gif", "image/webp", "image/jpeg", "image/png"];
+  if (!allowed.includes(file.type)) {
+    throw new Error("UNSUPPORTED");
+  }
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("READ_FAILED"));
+    reader.readAsDataURL(file);
+  });
+  // GIF 保持原样（canvas 会丢失动图帧）；其余类型统一裁剪压缩。
+  if (file.type === "image/gif") return dataUrl;
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("DECODE_FAILED"));
+    img.src = dataUrl;
+  });
+  const size = 250;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return dataUrl;
+  const scale = Math.max(size / image.width, size / image.height);
+  const width = image.width * scale;
+  const height = image.height * scale;
+  ctx.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+  return canvas.toDataURL("image/webp", 0.8);
+}
+
 export function PlatformSection() {
   const { intl, locale: intlLocale } = useZCodeIntl();
   const copy = getPlatformSectionCopy(intlLocale);
@@ -49,6 +85,81 @@ export function PlatformSection() {
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordUpdated, setPasswordUpdated] = useState(false);
+
+  // 个人资料编辑（OpenWebUI Account 页对应）
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const [profileName, setProfileName] = useState("");
+  const [profileEmail, setProfileEmail] = useState("");
+  const [profileBio, setProfileBio] = useState("");
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileSavedFlag, setProfileSavedFlag] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+
+  useEffect(() => {
+    if (!platformUser) return;
+    setProfileName(platformUser.displayName ?? "");
+    setProfileEmail(platformUser.email ?? "");
+    setProfileBio(platformUser.bio ?? "");
+    setProfileDirty(false);
+  }, [platformUser]);
+
+  const submitProfile = useCallback(
+    async (avatarOverride?: string | null): Promise<void> => {
+      if (!platformUser || profileBusy) return;
+      setProfileBusy(true);
+      setProfileError(null);
+      setProfileSavedFlag(false);
+      try {
+        const body: Record<string, unknown> = {
+          displayName: profileName,
+          email: profileEmail,
+          bio: profileBio,
+        };
+        if (avatarOverride !== undefined) body.avatarUrl = avatarOverride;
+        const data = await platformApi<{ user: { displayName?: string; email?: string; bio?: string; avatarUrl?: string } }>(
+          "/api/platform/auth/update-profile",
+          { method: "POST", body: JSON.stringify(body) },
+        );
+        setPlatformUser({
+          ...platformUser,
+          ...(data.user.displayName ? { displayName: data.user.displayName } : { displayName: undefined }),
+          ...(data.user.email ? { email: data.user.email } : { email: undefined }),
+          ...(data.user.bio ? { bio: data.user.bio } : { bio: undefined }),
+          ...(data.user.avatarUrl ? { avatarUrl: data.user.avatarUrl } : { avatarUrl: undefined }),
+        });
+        setProfileDirty(false);
+        setProfileSavedFlag(true);
+      } catch (error) {
+        setProfileError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setProfileBusy(false);
+      }
+    },
+    [platformUser, profileBusy, profileName, profileEmail, profileBio],
+  );
+
+  const handleAvatarSelected = useCallback(
+    async (file: File | undefined): Promise<void> => {
+      if (!file || !platformUser) return;
+      setProfileError(null);
+      setAvatarBusy(true);
+      try {
+        const dataUri = await readAvatarAsDataUri(file);
+        await submitProfile(dataUri);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setProfileError(
+          message === "UNSUPPORTED" ? copy.avatarUnsupported : `${copy.loadFailed}: ${message}`,
+        );
+      } finally {
+        setAvatarBusy(false);
+        if (avatarInputRef.current) avatarInputRef.current.value = "";
+      }
+    },
+    [platformUser, submitProfile, copy],
+  );
 
   const loadShares = useCallback(async (): Promise<void> => {
     setSharesError(null);
@@ -165,9 +276,37 @@ export function PlatformSection() {
         </header>
         <div className="px-4 py-3">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-ui-sm font-semibold text-foreground">
-              {(platformUser.displayName || platformUser.username).slice(0, 1).toUpperCase()}
-            </div>
+            {/* 头像：点击上传（悬停遮罩），data-URI 直存用户表（OpenWebUI 同款无文件依赖） */}
+            <button
+              type="button"
+              className="group relative size-14 shrink-0 overflow-hidden rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => avatarInputRef.current?.click()}
+              title={copy.avatarUpload}
+            >
+              {platformUser.avatarUrl ? (
+                <img
+                  src={platformUser.avatarUrl}
+                  alt=""
+                  className="size-14 rounded-lg object-cover"
+                />
+              ) : (
+                <img
+                  src={`/api/platform/users/${platformUser.id}/avatar`}
+                  alt=""
+                  className="size-14 rounded-lg object-cover"
+                />
+              )}
+              <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-ui-xs font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+                {avatarBusy ? <Spinner className="size-4" /> : copy.avatarUpload}
+              </span>
+            </button>
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              className="hidden"
+              onChange={(event) => void handleAvatarSelected(event.target.files?.[0])}
+            />
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="truncate text-ui-base font-medium text-foreground">
@@ -182,7 +321,69 @@ export function PlatformSection() {
                 ID {platformUser.id.slice(0, 8)}
               </div>
             </div>
+            {platformUser.avatarUrl ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto"
+                disabled={avatarBusy}
+                onClick={() => void submitProfile(null)}
+              >
+                {copy.avatarRemove}
+              </Button>
+            ) : null}
           </div>
+
+          {/* 个人资料编辑 */}
+          <div className="mt-4 max-w-md space-y-2 border-t border-border pt-4">
+            <div className="text-ui-sm font-medium text-foreground">{copy.profileTitle}</div>
+            <div className="text-ui-xs text-foreground-subtle">{copy.profileDescription}</div>
+            <Input
+              size="lg"
+              placeholder={copy.profileDisplayNamePlaceholder}
+              value={profileName}
+              maxLength={64}
+              onChange={(event) => {
+                setProfileName(event.target.value);
+                setProfileDirty(true);
+              }}
+            />
+            <Input
+              size="lg"
+              type="email"
+              placeholder={copy.profileEmailPlaceholder}
+              value={profileEmail}
+              maxLength={254}
+              onChange={(event) => {
+                setProfileEmail(event.target.value);
+                setProfileDirty(true);
+              }}
+            />
+            <Textarea
+              placeholder={copy.profileBioPlaceholder}
+              value={profileBio}
+              maxLength={500}
+              rows={3}
+              onChange={(event) => {
+                setProfileBio(event.target.value);
+                setProfileDirty(true);
+              }}
+            />
+            {profileError ? <p className="text-ui-xs text-destructive">{profileError}</p> : null}
+            {profileSavedFlag ? (
+              <p className="text-ui-xs text-foreground-subtle">{copy.profileSaved}</p>
+            ) : null}
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                disabled={profileBusy || (!profileDirty && !profileSavedFlag)}
+                onClick={() => void submitProfile()}
+              >
+                {profileBusy ? copy.savingAction : copy.profileSaveAction}
+              </Button>
+            </div>
+          </div>
+
           <div className="mt-4 max-w-md space-y-2 border-t border-border pt-4">
             <div className="text-ui-sm font-medium text-foreground">{copy.changePasswordTitle}</div>
             <Input

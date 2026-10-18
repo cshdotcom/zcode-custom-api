@@ -30,6 +30,12 @@ fi
 export PORT="${PORT:-3000}"
 export ZCODE_PLATFORM_AUTH="${ZCODE_PLATFORM_AUTH:-1}"
 export ZCODE_PLATFORM_SEARCH_MCP="${ZCODE_PLATFORM_SEARCH_MCP:-1}"
+# 每用户数据隔离（多租户安全基线）：会话/任务/provider 配置按用户分目录落盘。
+# ZCODE_PLATFORM_USERS_ROOT=0 可显式关闭（单管理员自用场景）。
+if [ "${ZCODE_PLATFORM_USERS_ROOT:-1}" != "0" ]; then
+  export ZCODE_PLATFORM_USERS_ROOT="${ZCODE_PLATFORM_USERS_ROOT:-$DATA_DIR/users}"
+  mkdir -p "$ZCODE_PLATFORM_USERS_ROOT"
+fi
 export ZCODE_WEB_STATIC_ROOT=/app/packages/web/dist
 
 exec node /app/packages/server/dist/entry-http.js

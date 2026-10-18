@@ -89,7 +89,9 @@ export function MarketingTouchProvider({
   const identity = user?.id ?? "anonymous";
   const createRuntime = useCallback(() => {
     const service = services.marketingTouchService;
-    if (!service || restoring) return null;
+    // 独立部署（平台账号模式）：未登录官方 z.ai 账号时不轮询营销触点，
+    // 避免内网/隔离环境反复外联失败的报错噪声。
+    if (!service || restoring || !user) return null;
     let poller: ReturnType<typeof createMarketingTouchPoller>;
     const controller = createMarketingTouchController({
       query: () => service.query({ locale }),
