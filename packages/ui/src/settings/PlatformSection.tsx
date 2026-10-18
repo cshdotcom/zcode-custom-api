@@ -33,8 +33,8 @@ function formatDateTime(value: number | undefined, locale: string): string {
 }
 
 export function PlatformSection() {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformSectionCopy(intlLocale);
   const platformUser = usePlatformUser();
 
   const [shares, setShares] = useState<PlatformShareRow[] | null>(null);
@@ -285,7 +285,7 @@ export function PlatformSection() {
                         {share.viewCount}
                       </td>
                       <td className="px-3 py-2 text-foreground-subtle">
-                        {formatDateTime(share.createdAt, intl.locale)}
+                        {formatDateTime(share.createdAt, intlLocale)}
                       </td>
                       <td className="px-4 py-2">
                         <div className="flex items-center justify-end gap-1">
@@ -348,13 +348,249 @@ export function PlatformSection() {
 
       {/* 提示词库 */}
       <PromptsSection />
+
+      {/* API 密钥 */}
+      <ApiTokensSection />
     </div>
   );
 }
 
+interface PlatformApiTokenRow {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: number;
+  lastUsedAt?: number;
+  revokedAt?: number;
+}
+
+function ApiTokensSection(): React.ReactElement {
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformSectionCopy(intlLocale);
+  const platformUser = usePlatformUser();
+
+  const [tokens, setTokens] = useState<PlatformApiTokenRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  // 新令牌明文只在创建响应中出现一次；展示期间高亮，关闭/再建后清掉。
+  const [freshToken, setFreshToken] = useState<string | null>(null);
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      const data = await platformApi<{ tokens: PlatformApiTokenRow[] }>("/api/platform/tokens");
+      setTokens(data.tokens);
+    } catch (requestError) {
+      setTokens([]);
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!platformUser) return;
+    void load();
+  }, [platformUser, load]);
+
+  if (!platformUser) return <></>;
+
+  const submit = async (): Promise<void> => {
+    if (!name.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await platformApi<{ token: string }>("/api/platform/tokens", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      setFreshToken(data.token);
+      setName("");
+      setHint(null);
+      await load();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string): Promise<void> => {
+    setBusyId(id);
+    setError(null);
+    try {
+      await platformApiDelete(`/api/platform/tokens/${id}`);
+      setConfirmId(null);
+      await load();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const copyFreshToken = async (): Promise<void> => {
+    if (!freshToken) return;
+    try {
+      await navigator.clipboard.writeText(freshToken);
+      setHint(copy.tokenCopied);
+    } catch {
+      window.prompt(copy.tokenCreatedOnce, freshToken);
+    }
+  };
+
+  const closeCreate = (): void => {
+    setCreateOpen(false);
+    setFreshToken(null);
+  };
+
+  const example = copy.apiExampleText.replaceAll("{origin}", window.location.origin);
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-card" data-testid="platform-api-tokens">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-ui-base font-semibold text-foreground">{copy.apiTokensTitle}</div>
+          <div className="mt-0.5 text-ui-xs text-foreground-subtle">{copy.apiTokensDescription}</div>
+        </div>
+        <div className="flex items-center gap-3">
+          {hint ? <span className="text-ui-xs text-foreground-subtle">{hint}</span> : null}
+          <Button
+            size="sm"
+            onClick={() => {
+              setFreshToken(null);
+              setCreateOpen(true);
+            }}
+          >
+            {copy.createTokenAction}
+          </Button>
+        </div>
+      </header>
+      {error ? (
+        <div className="border-b border-border px-4 py-2 text-ui-xs text-destructive">{error}</div>
+      ) : null}
+      {createOpen ? (
+        <div className="grid gap-3 border-b border-border px-4 py-4">
+          {freshToken ? (
+            <div className="space-y-2">
+              <div className="text-ui-sm font-medium text-foreground">{copy.tokenCreatedOnce}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="min-w-0 flex-1 overflow-x-auto rounded-lg bg-surface px-3 py-2 font-mono text-ui-xs text-foreground">
+                  {freshToken}
+                </code>
+                <Button size="sm" onClick={() => void copyFreshToken()}>
+                  {copy.copyLinkAction}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={closeCreate}>
+                  {copy.cancelAction}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <Input
+                size="lg"
+                placeholder={copy.tokenNameLabel}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="ghost" onClick={closeCreate}>
+                  {copy.cancelAction}
+                </Button>
+                <Button size="sm" disabled={busy || !name.trim()} onClick={() => void submit()}>
+                  {busy ? copy.savingAction : copy.createTokenAction}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
+      {tokens === null ? (
+        <div className="flex items-center justify-center px-4 py-10 text-foreground-subtle">
+          <Spinner className="size-5" />
+        </div>
+      ) : tokens.length === 0 ? (
+        <div className="px-4 py-8 text-center text-ui-sm text-foreground-subtle">{copy.apiTokenEmpty}</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-ui-sm">
+            <thead>
+              <tr className="bg-surface text-ui-xs text-foreground-subtle">
+                <th className="px-4 py-2 text-left font-medium">{copy.colTokenName}</th>
+                <th className="px-3 py-2 text-left font-medium">{copy.colTokenPrefix}</th>
+                <th className="px-3 py-2 text-left font-medium">{copy.colCreated}</th>
+                <th className="px-3 py-2 text-left font-medium">{copy.colLastUsed}</th>
+                <th className="px-4 py-2 text-right font-medium">{copy.colActions}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tokens.map((token) => (
+                <tr key={token.id} className="border-t border-border">
+                  <td className="px-4 py-2 font-medium text-foreground">{token.name}</td>
+                  <td className="px-3 py-2 font-mono text-ui-xs text-foreground-subtle">{token.prefix}</td>
+                  <td className="px-3 py-2 text-foreground-subtle">
+                    {formatDateTime(token.createdAt, intlLocale)}
+                  </td>
+                  <td className="px-3 py-2 text-foreground-subtle">
+                    {token.lastUsedAt ? formatDateTime(token.lastUsedAt, intlLocale) : "—"}
+                  </td>
+                  <td className="px-4 py-2">
+                    <div className="flex items-center justify-end gap-2">
+                      {token.revokedAt ? (
+                        <Badge variant="outline">{copy.tokenRevokedBadge}</Badge>
+                      ) : (
+                        <>
+                          <Badge variant="secondary">{copy.tokenActiveBadge}</Badge>
+                          {confirmId === token.id ? (
+                            <>
+                              <Button
+                                size="xs"
+                                variant="destructive"
+                                disabled={busyId === token.id}
+                                onClick={() => void revoke(token.id)}
+                              >
+                                {copy.yesAction}
+                              </Button>
+                              <Button size="xs" variant="ghost" onClick={() => setConfirmId(null)}>
+                                {copy.cancelAction}
+                              </Button>
+                            </>
+                          ) : (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              className="text-destructive"
+                              onClick={() => setConfirmId(token.id)}
+                            >
+                              {copy.revokeTokenAction}
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <details className="border-t border-border px-4 py-3">
+        <summary className="cursor-pointer text-ui-xs text-foreground-subtle">{copy.apiExampleLabel}</summary>
+        <pre className="mt-2 overflow-x-auto rounded-lg bg-surface px-3 py-2 font-mono text-ui-xs text-foreground-subtle">
+          {example}
+        </pre>
+      </details>
+    </section>
+  );
+}
+
 function PromptsSection(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformSectionCopy(intlLocale);
   const platformUser = usePlatformUser();
   const isAdmin = platformUser?.role === "admin";
 

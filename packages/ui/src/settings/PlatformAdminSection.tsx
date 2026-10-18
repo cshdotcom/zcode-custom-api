@@ -94,8 +94,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // ---------------- 用户 ----------------
 
 function UsersTab(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intlLocale);
   const me = usePlatformUser();
   const [users, setUsers] = useState<PlatformUserRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -269,10 +269,10 @@ function UsersTab(): React.ReactElement {
                     {user.groupNames.length > 0 ? user.groupNames.join(", ") : copy.noGroups}
                   </td>
                   <td className="px-3 py-2 text-ui-xs text-foreground-subtle">
-                    {formatDateTime(user.createdAt, intl.locale)}
+                    {formatDateTime(user.createdAt, intlLocale)}
                   </td>
                   <td className="px-3 py-2 text-ui-xs text-foreground-subtle">
-                    {formatDateTime(user.lastLoginAt, intl.locale)}
+                    {formatDateTime(user.lastLoginAt, intlLocale)}
                   </td>
                   <td className="px-4 py-2">
                     <div className="flex flex-wrap items-center justify-end gap-1">
@@ -337,8 +337,8 @@ function UsersTab(): React.ReactElement {
 // ---------------- 邀请码 ----------------
 
 function InvitesTab(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intlLocale);
   const [invites, setInvites] = useState<PlatformInviteRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyCode, setBusyCode] = useState<string | null>(null);
@@ -494,7 +494,7 @@ function InvitesTab(): React.ReactElement {
                       {invite.defaultRole === "pending" ? copy.rolePending : copy.roleUser}
                     </td>
                     <td className="px-3 py-2 text-ui-xs text-foreground-subtle">
-                      {invite.expiresAt ? formatDateTime(invite.expiresAt, intl.locale) : copy.inviteNeverExpires}
+                      {invite.expiresAt ? formatDateTime(invite.expiresAt, intlLocale) : copy.inviteNeverExpires}
                     </td>
                     <td className="px-3 py-2">
                       <Badge variant={status.variant}>{status.label}</Badge>
@@ -544,8 +544,8 @@ function InvitesTab(): React.ReactElement {
 // ---------------- 用户组 ----------------
 
 function GroupsTab(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intlLocale);
   const [groups, setGroups] = useState<PlatformGroupRow[] | null>(null);
   const [users, setUsers] = useState<PlatformUserRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -738,8 +738,8 @@ function GroupsTab(): React.ReactElement {
 // ---------------- 系统设置 ----------------
 
 function SystemTab(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intlLocale);
   const [config, setConfig] = useState<PlatformSystemConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -860,6 +860,42 @@ function SystemTab(): React.ReactElement {
               </Field>
             </div>
           ) : null}
+          {/* 个人 API 网关（OpenAI 兼容端点上游） */}
+          <div className="flex items-center justify-between gap-4 border-t border-border pt-4">
+            <div className="min-w-0">
+              <div className="text-ui-base text-foreground">{copy.gatewayTitle}</div>
+              <div className="mt-0.5 text-ui-xs text-foreground-subtle">{copy.gatewayDescription}</div>
+            </div>
+            <Switch
+              checked={config.gatewayEnabled}
+              onCheckedChange={(checked) => setConfig({ ...config, gatewayEnabled: checked })}
+            />
+          </div>
+          {config.gatewayEnabled ? (
+            <div className="grid gap-3 border-t border-border pt-4">
+              <Field label={copy.gatewayBaseUrlLabel}>
+                <Input
+                  placeholder="https://api.openai.com/v1"
+                  value={config.gatewayBaseUrl}
+                  onChange={(event) => setConfig({ ...config, gatewayBaseUrl: event.target.value })}
+                />
+              </Field>
+              <Field label={copy.gatewayApiKeyLabel}>
+                <Input
+                  type="password"
+                  value={config.gatewayApiKey}
+                  onChange={(event) => setConfig({ ...config, gatewayApiKey: event.target.value })}
+                />
+              </Field>
+              <Field label={copy.gatewayModelsLabel}>
+                <Input
+                  placeholder="gpt-4o, claude-sonnet-4-5, …"
+                  value={config.gatewayModels}
+                  onChange={(event) => setConfig({ ...config, gatewayModels: event.target.value })}
+                />
+              </Field>
+            </div>
+          ) : null}
         </div>
         {error ? <p className="text-ui-xs text-destructive">{error}</p> : null}
         <div className="flex justify-end border-t border-border pt-3">
@@ -875,8 +911,8 @@ function SystemTab(): React.ReactElement {
 // ---------------- 联网搜索 ----------------
 
 function SearchTab(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intlLocale);
   const [config, setConfig] = useState<PlatformSearchConfig | null>(null);
   const [providers, setProviders] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -994,8 +1030,8 @@ function SearchTab(): React.ReactElement {
 // ---------------- 浏览器桥 ----------------
 
 function BrowserTab(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intlLocale);
   const [status, setStatus] = useState<PlatformBrowserStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
@@ -1058,7 +1094,7 @@ function BrowserTab(): React.ReactElement {
         </div>
       )}
       <div className="px-4 pb-3 text-ui-xs text-foreground-subtle">
-        {formatDateTime(Date.now(), intl.locale)}
+        {formatDateTime(Date.now(), intlLocale)}
       </div>
     </Card>
   );
@@ -1069,8 +1105,8 @@ function BrowserTab(): React.ReactElement {
 // ---------------- 知识库 ----------------
 
 function KnowledgeTab(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intlLocale);
   const [docs, setDocs] = useState<PlatformKbDocRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hint, setHint] = useState<string | null>(null);
@@ -1217,7 +1253,7 @@ function KnowledgeTab(): React.ReactElement {
                     </td>
                     <td className="px-3 py-2 tabular-nums text-foreground-subtle">{doc.chunkCount}</td>
                     <td className="px-3 py-2 text-ui-xs text-foreground-subtle">
-                      {formatDateTime(doc.createdAt, intl.locale)}
+                      {formatDateTime(doc.createdAt, intlLocale)}
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex items-center justify-end">
@@ -1260,8 +1296,8 @@ const AUDIT_EVENT_TYPES = [
 ] as const;
 
 function UsageTab(): React.ReactElement {
-  const { intl } = useZCodeIntl();
-  const copy = getPlatformAdminSectionCopy(intl.locale);
+  const { intl, locale: intlLocale } = useZCodeIntl();
+  const copy = getPlatformAdminSectionCopy(intlLocale);
   const [stats, setStats] = useState<PlatformStatsRow | null>(null);
   const [events, setEvents] = useState<PlatformEventRow[] | null>(null);
   const [typeFilter, setTypeFilter] = useState<string>("");
@@ -1332,7 +1368,7 @@ function UsageTab(): React.ReactElement {
               <SelectItem value="__all__">{copy.auditFilterAll}</SelectItem>
               {AUDIT_EVENT_TYPES.map((type) => (
                 <SelectItem key={type} value={type}>
-                  {platformEventLabel(type, intl.locale)}
+                  {platformEventLabel(type, intlLocale)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1360,13 +1396,13 @@ function UsageTab(): React.ReactElement {
               <tbody>
                 {events.map((event) => (
                   <tr key={event.id} className="border-t border-border">
-                    <td className="px-4 py-2 whitespace-nowrap">{platformEventLabel(event.type, intl.locale)}</td>
+                    <td className="px-4 py-2 whitespace-nowrap">{platformEventLabel(event.type, intlLocale)}</td>
                     <td className="px-3 py-2 text-foreground-subtle">{event.username || "—"}</td>
                     <td className="max-w-72 truncate px-3 py-2 text-ui-xs text-foreground-subtle" title={event.detail}>
                       {event.detail || "—"}
                     </td>
                     <td className="px-4 py-2 whitespace-nowrap text-ui-xs text-foreground-subtle">
-                      {formatDateTime(event.createdAt, intl.locale)}
+                      {formatDateTime(event.createdAt, intlLocale)}
                     </td>
                   </tr>
                 ))}
@@ -1380,9 +1416,9 @@ function UsageTab(): React.ReactElement {
 }
 
 export function PlatformAdminSection() {
-  const { intl } = useZCodeIntl();
+  const { intl, locale: intlLocale } = useZCodeIntl();
   const [tab, setTab] = useState<AdminTab>("users");
-  const copy = useMemo(() => getPlatformAdminSectionCopy(intl.locale), [intl.locale]);
+  const copy = useMemo(() => getPlatformAdminSectionCopy(intlLocale), [intlLocale]);
 
   const tabs = useMemo(
     () => [

@@ -83,6 +83,8 @@ export function createPlatformAuthMiddleware(deps: PlatformDeps) {
       INVITE_VALIDATE_RE.test(pathname);
     // 对外搜索端点（OpenWebUI / MCP server 接入）有独立的 Token 校验，不走平台会话强制鉴权。
     const isPublicSearch = pathname === "/search" || pathname === "/api/platform/search";
+    // OpenAI 兼容网关（/v1/models、/v1/chat/completions）：个人 sk-zc- 令牌鉴权，路由内自行校验。
+    const isApiGateway = pathname.startsWith("/api/platform/v1/");
     // 内部服务令牌（MCP server 等）可访问知识库检索端点；路由内会再校验令牌本身。
     const isServiceKbSearch =
       pathname === "/api/platform/kb/search" &&
@@ -93,7 +95,7 @@ export function createPlatformAuthMiddleware(deps: PlatformDeps) {
     // 无论是否强制鉴权，都先解析会话（/me、搜索 API、公共端点在已登录时需要 platformUser）。
     const user = sessionFromRequest(c, deps.store);
     if (user) c.set("platformUser", user);
-    if (isAuthPath || isLoginHtml || isHealth || isPublicSearch || isPublicShare || isServiceKbSearch) {
+    if (isAuthPath || isLoginHtml || isHealth || isPublicSearch || isPublicShare || isServiceKbSearch || isApiGateway) {
       await next();
       return;
     }
@@ -334,8 +336,136 @@ export function registerPlatformRoutes(app: Hono, deps: PlatformDeps): void {
         ...(body.announcementBody !== undefined
           ? { announcementBody: String(body.announcementBody) }
           : {}),
+        ...(body.gatewayEnabled !== undefined
+          ? { gatewayEnabled: Boolean(body.gatewayEnabled) }
+          : {}),
+        ...(body.gatewayBaseUrl !== undefined
+          ? { gatewayBaseUrl: String(body.gatewayBaseUrl) }
+          : {}),
+        ...(body.gatewayApiKey !== undefined && String(body.gatewayApiKey).length > 0
+          ? { gatewayApiKey: String(body.gatewayApiKey) }
+          : {}),
+        ...(body.gatewayModels !== undefined
+          ? { gatewayModels: String(body.gatewayModels) }
+          : {}),
       }),
     );
+  });
+
+  // ---------- 个人 API Token（OpenWebUI 式 API keys） ----------
+
+  app.get("/api/platform/tokens", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized: 请先登录平台账号", 401);
+    return c.json({ tokens: store.listApiTokens(user.id) });
+  });
+
+  app.post("/api/platform/tokens", async (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized: 请先登录平台账号", 401);
+    const body = await readJson(c);
+    const name = typeof body.name === "string" ? body.name : "";
+    if (!name.trim()) return jsonError(c, "请填写令牌名称", 400);
+    try {
+      const created = store.createApiToken({ userId: user.id, name });
+      store.recordEvent("token.create", user, name);
+      return c.json(created);
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 400);
+    }
+  });
+
+  app.delete("/api/platform/tokens/:id", (c) => {
+    const store = requireStore(c);
+    if (store instanceof Response) return store;
+    const user = c.get("platformUser") as PlatformUser | undefined;
+    if (!user) return jsonError(c, "Unauthorized: 请先登录平台账号", 401);
+    try {
+      const revoked = store.revokeApiToken(c.req.param("id"), user);
+      if (revoked) store.recordEvent("token.revoke", user, c.req.param("id"));
+      return c.json({ ok: revoked });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error), 403);
+    }
+  });
+
+  // ---------- OpenAI 兼容个人网关（sk-zc- 令牌鉴权 → 上游透传） ----------
+
+  const gatewayAuth = (c: Context): { store: PlatformStore; userId: string } | Response => {
+    const store = deps.store;
+    if (!store) return jsonError(c, "平台用户系统未启用", 403);
+    const config = store.getConfig();
+    if (!config.gatewayEnabled) {
+      return jsonError(c, "个人 API 网关未启用（管理员可在平台管理 → 系统中开启）", 403);
+    }
+    const bearer = bearerFromRequest(c);
+    if (!bearer) return jsonError(c, "缺少 Bearer 令牌（sk-zc-...）", 401);
+    const verified = store.verifyApiToken(bearer);
+    if (!verified) return jsonError(c, "令牌无效或已吊销", 401);
+    return { store, userId: verified.userId };
+  };
+
+  app.get("/api/platform/v1/models", (c) => {
+    const auth = gatewayAuth(c);
+    if (auth instanceof Response) return auth;
+    const models = (auth.store.getConfig().gatewayModels ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((id) => ({
+        id,
+        object: "model",
+        owned_by: "zcode-platform",
+      }));
+    return c.json({ object: "list", data: models });
+  });
+
+  app.post("/api/platform/v1/chat/completions", async (c) => {
+    const auth = gatewayAuth(c);
+    if (auth instanceof Response) return auth;
+    const config = auth.store.getConfig();
+    const upstreamBase = config.gatewayBaseUrl?.replace(/\/+$/, "");
+    if (!upstreamBase) return jsonError(c, "网关上游未配置（gatewayBaseUrl）", 503);
+    let payload: Record<string, unknown>;
+    try {
+      payload = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return jsonError(c, "请求体不是合法 JSON", 400);
+    }
+    const upstreamHeaders: Record<string, string> = {
+      "content-type": "application/json",
+      ...(config.gatewayApiKey ? { authorization: `Bearer ${config.gatewayApiKey}` } : {}),
+    };
+    const upstreamUrl = `${upstreamBase}/chat/completions`;
+    let upstreamResponse: Response;
+    try {
+      upstreamResponse = await fetch(upstreamUrl, {
+        method: "POST",
+        headers: upstreamHeaders,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(300_000),
+      });
+    } catch (error) {
+      return jsonError(
+        c,
+        `上游请求失败：${error instanceof Error ? error.message : String(error)}`,
+        502,
+      );
+    }
+    // 流式/非流式统一透传：保住上游 content-type（含 SSE boundary 语义）。
+    const headers = new Headers();
+    const contentType = upstreamResponse.headers.get("content-type");
+    if (contentType) headers.set("content-type", contentType);
+    const cacheControl = upstreamResponse.headers.get("cache-control");
+    if (cacheControl) headers.set("cache-control", cacheControl);
+    return new Response(upstreamResponse.body, {
+      status: upstreamResponse.status,
+      headers,
+    });
   });
 
   // ---------- 管理员：用户管理 ----------

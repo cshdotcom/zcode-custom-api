@@ -84,6 +84,21 @@ export interface PlatformSectionCopy {
   promptSaved: string;
   confirmDeletePrompt: string;
   editAction: string;
+  apiTokensTitle: string;
+  apiTokensDescription: string;
+  apiTokenEmpty: string;
+  createTokenAction: string;
+  tokenNameLabel: string;
+  tokenCreatedOnce: string;
+  colTokenName: string;
+  colTokenPrefix: string;
+  colLastUsed: string;
+  tokenActiveBadge: string;
+  tokenRevokedBadge: string;
+  revokeTokenAction: string;
+  tokenCopied: string;
+  apiExampleLabel: string;
+  apiExampleText: string;
 }
 
 export interface PlatformAdminSectionCopy extends PlatformSectionCopy {
@@ -202,6 +217,13 @@ export interface PlatformAdminSectionCopy extends PlatformSectionCopy {
   configAnnouncementEnabled: string;
   configAnnouncementTitle: string;
   configAnnouncementBody: string;
+  gatewayTitle: string;
+  gatewayDescription: string;
+  configGatewayEnabled: string;
+  gatewayBaseUrlLabel: string;
+  gatewayApiKeyLabel: string;
+  gatewayModelsLabel: string;
+  gatewaySaved: string;
 }
 
 const PLATFORM_SECTION_COPY = {
@@ -259,6 +281,23 @@ const PLATFORM_SECTION_COPY = {
     promptSaved: "已保存",
     confirmDeletePrompt: "确认删除该提示词？",
     editAction: "编辑",
+    apiTokensTitle: "API 密钥",
+    apiTokensDescription:
+      "创建个人令牌后，可在任意 OpenAI 兼容客户端（Cherry Studio / LobeChat / OpenWebUI / curl…）中通过 /api/platform/v1 调用平台模型。",
+    apiTokenEmpty: "还没有 API 令牌。点击「创建令牌」生成第一把密钥。",
+    createTokenAction: "创建令牌",
+    tokenNameLabel: "令牌名称（如：我的笔记本）",
+    tokenCreatedOnce: "请立即复制令牌，关闭后仅显示掩码：",
+    colTokenName: "名称",
+    colTokenPrefix: "令牌",
+    colLastUsed: "最近使用",
+    tokenActiveBadge: "有效",
+    tokenRevokedBadge: "已吊销",
+    revokeTokenAction: "吊销",
+    tokenCopied: "令牌已复制到剪贴板",
+    apiExampleLabel: "调用示例（OpenAI 兼容）",
+    apiExampleText:
+      "curl {origin}/api/platform/v1/chat/completions \\\n  -H \"Authorization: Bearer sk-zc-…\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"…\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}'",
   },
   "en-US": {
     platformDisabledHint:
@@ -314,6 +353,23 @@ const PLATFORM_SECTION_COPY = {
     promptSaved: "Saved",
     confirmDeletePrompt: "Delete this prompt?",
     editAction: "Edit",
+    apiTokensTitle: "API Keys",
+    apiTokensDescription:
+      "Create a personal token and call platform models from any OpenAI-compatible client via /api/platform/v1.",
+    apiTokenEmpty: "No API tokens yet. Create your first key.",
+    createTokenAction: "Create Token",
+    tokenNameLabel: "Token name (e.g. my-laptop)",
+    tokenCreatedOnce: "Copy the token now — only the masked prefix is shown later:",
+    colTokenName: "Name",
+    colTokenPrefix: "Token",
+    colLastUsed: "Last used",
+    tokenActiveBadge: "Active",
+    tokenRevokedBadge: "Revoked",
+    revokeTokenAction: "Revoke",
+    tokenCopied: "Token copied to clipboard",
+    apiExampleLabel: "Example (OpenAI-compatible)",
+    apiExampleText:
+      "curl {origin}/api/platform/v1/chat/completions \\\n  -H \"Authorization: Bearer sk-zc-…\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\":\"…\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'",
   },
 } as const;
 
@@ -434,6 +490,14 @@ const ADMIN_EXTRA_COPY = {
     configAnnouncementEnabled: "启用工作台公告横幅",
     configAnnouncementTitle: "公告标题",
     configAnnouncementBody: "公告内容",
+    gatewayTitle: "个人 API 网关",
+    gatewayDescription:
+      "OpenAI 兼容端点 /api/platform/v1 的上游。用户在平台中心创建令牌后即可在任意第三方客户端调用平台模型。",
+    configGatewayEnabled: "启用个人 API 网关",
+    gatewayBaseUrlLabel: "上游 Base URL（如 https://api.openai.com/v1）",
+    gatewayApiKeyLabel: "上游 API Key（留空则沿用上次保存值）",
+    gatewayModelsLabel: "模型列表（逗号分隔，供 /v1/models 返回）",
+    gatewaySaved: "网关配置已保存",
   },
   "en-US": {
     tabUsers: "Users",
@@ -551,6 +615,14 @@ const ADMIN_EXTRA_COPY = {
     configAnnouncementEnabled: "Show workbench announcement banner",
     configAnnouncementTitle: "Announcement title",
     configAnnouncementBody: "Announcement body",
+    gatewayTitle: "Personal API Gateway",
+    gatewayDescription:
+      "Upstream for the OpenAI-compatible endpoint /api/platform/v1. Users create personal tokens in Platform Center.",
+    configGatewayEnabled: "Enable personal API gateway",
+    gatewayBaseUrlLabel: "Upstream base URL (e.g. https://api.openai.com/v1)",
+    gatewayApiKeyLabel: "Upstream API key (empty = keep last saved value)",
+    gatewayModelsLabel: "Model list (comma-separated, served by /v1/models)",
+    gatewaySaved: "Gateway config saved",
   },
 } as const;
 
@@ -569,6 +641,8 @@ export function platformEventLabel(type: string, locale?: string): string {
     "prompt.create": ["新建提示词", "Prompt created"],
     "kb.create": ["上传知识文档", "KB doc uploaded"],
     "kb.delete": ["删除知识文档", "KB doc deleted"],
+    "token.create": ["创建 API 令牌", "API token created"],
+    "token.revoke": ["吊销 API 令牌", "API token revoked"],
   };
   const entry = labels[type];
   if (!entry) return type;

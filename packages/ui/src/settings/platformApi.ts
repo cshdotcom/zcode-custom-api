@@ -58,6 +58,10 @@ export interface PlatformSystemConfig {
   announcementEnabled: boolean;
   announcementTitle: string;
   announcementBody: string;
+  gatewayEnabled: boolean;
+  gatewayBaseUrl: string;
+  gatewayApiKey: string;
+  gatewayModels: string;
 }
 
 export interface PlatformSearchConfig {

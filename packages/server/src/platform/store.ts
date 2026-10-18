@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -88,6 +88,12 @@ export interface PlatformConfig {
   announcementEnabled: boolean;
   announcementTitle?: string;
   announcementBody?: string;
+  /** 个人 API 网关（OpenAI 兼容端点上游）。 */
+  gatewayEnabled: boolean;
+  gatewayBaseUrl?: string;
+  gatewayApiKey?: string;
+  /** 逗号分隔的模型 ID 列表（透传给 /v1/models）。 */
+  gatewayModels?: string;
 }
 
 export interface PlatformPrompt {
@@ -268,6 +274,17 @@ export class PlatformStore {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_events_time ON events (created_at DESC);
+      CREATE TABLE IF NOT EXISTS api_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        prefix TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        revoked_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens (user_id);
     `);
     // FTS5 全文索引（Node 24 内置 SQLite 通常启用；不可用时回退 LIKE 检索）。
     try {
@@ -311,6 +328,10 @@ export class PlatformStore {
       announcementEnabled: (read("announcementEnabled") ?? "false") === "true",
       ...(read("announcementTitle") ? { announcementTitle: read("announcementTitle") } : {}),
       ...(read("announcementBody") ? { announcementBody: read("announcementBody") } : {}),
+      gatewayEnabled: (read("gatewayEnabled") ?? "false") === "true",
+      ...(read("gatewayBaseUrl") ? { gatewayBaseUrl: read("gatewayBaseUrl") } : {}),
+      ...(read("gatewayApiKey") ? { gatewayApiKey: read("gatewayApiKey") } : {}),
+      ...(read("gatewayModels") ? { gatewayModels: read("gatewayModels") } : {}),
     };
     return this.#configCache;
   }
@@ -333,6 +354,10 @@ export class PlatformStore {
       set("announcementEnabled", String(patch.announcementEnabled));
     if (patch.announcementTitle !== undefined) set("announcementTitle", patch.announcementTitle);
     if (patch.announcementBody !== undefined) set("announcementBody", patch.announcementBody);
+    if (patch.gatewayEnabled !== undefined) set("gatewayEnabled", String(patch.gatewayEnabled));
+    if (patch.gatewayBaseUrl !== undefined) set("gatewayBaseUrl", patch.gatewayBaseUrl.trim());
+    if (patch.gatewayApiKey !== undefined) set("gatewayApiKey", patch.gatewayApiKey.trim());
+    if (patch.gatewayModels !== undefined) set("gatewayModels", patch.gatewayModels.trim());
     this.#configCache = undefined;
     return this.getConfig();
   }
@@ -1146,6 +1171,103 @@ export class PlatformStore {
       chunkCount: Number(row.chunk_count),
       createdAt: Number(row.created_at),
     };
+  }
+
+  // ================= 个人 API Token（OpenWebUI 式 API keys） =================
+
+  /** 发放个人 API Token。完整明文仅在创建响应中出现一次，库内只存 SHA-256 哈希。 */
+  createApiToken(input: { userId: string; name: string }): {
+    id: string;
+    name: string;
+    token: string;
+    prefix: string;
+    createdAt: number;
+  } {
+    const name = input.name.trim().slice(0, 64) || "default";
+    // 同名活跃令牌去重：改名比堆叠无意义令牌更健康。
+    const dup = this.#db
+      .prepare("SELECT id FROM api_tokens WHERE user_id = ? AND name = ? AND revoked_at IS NULL")
+      .get(input.userId, name) as { id: string } | undefined;
+    if (dup) throw new Error("已存在同名令牌，请换一个名称或先吊销旧令牌");
+    const secret = randomBytes(24).toString("base64url");
+    const token = `sk-zc-${secret}`;
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    const prefix = `sk-zc-${secret.slice(0, 4)}…${secret.slice(-4)}`;
+    const id = `tok_${randomBytes(8).toString("hex")}`;
+    const now = Date.now();
+    this.#db
+      .prepare(
+        "INSERT INTO api_tokens (id, user_id, name, token_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(id, input.userId, name, tokenHash, prefix, now);
+    return { id, name, token, prefix, createdAt: now };
+  }
+
+  listApiTokens(userId: string): Array<{
+    id: string;
+    name: string;
+    prefix: string;
+    createdAt: number;
+    lastUsedAt?: number;
+    revokedAt?: number;
+  }> {
+    const rows = this.#db
+      .prepare(
+        "SELECT id, name, prefix, created_at, last_used_at, revoked_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC",
+      )
+      .all(userId) as Array<{
+      id: string;
+      name: string;
+      prefix: string;
+      created_at: number;
+      last_used_at: number | null;
+      revoked_at: number | null;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      prefix: row.prefix,
+      createdAt: Number(row.created_at),
+      ...(row.last_used_at ? { lastUsedAt: Number(row.last_used_at) } : {}),
+      ...(row.revoked_at ? { revokedAt: Number(row.revoked_at) } : {}),
+    }));
+  }
+
+  /** 吊销令牌（本人或管理员）。返回是否确有行被更新。 */
+  revokeApiToken(id: string, viewer: PlatformUser): boolean {
+    const row = this.#db.prepare("SELECT user_id FROM api_tokens WHERE id = ?").get(id) as
+      | { user_id: string }
+      | undefined;
+    if (!row) return false;
+    if (row.user_id !== viewer.id && viewer.role !== "admin") {
+      throw new Error("无权吊销他人的令牌");
+    }
+    const result = this.#db
+      .prepare("UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+      .run(Date.now(), id);
+    return Number(result.changes) > 0;
+  }
+
+  /** 网关鉴权：按明文令牌查活跃项；命中则顺手更新 last_used_at。 */
+  verifyApiToken(
+    rawToken: string,
+  ): { tokenId: string; userId: string } | undefined {
+    if (!rawToken.startsWith("sk-zc-")) return undefined;
+    const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+    const row = this.#db
+      .prepare(
+        "SELECT id, user_id FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL",
+      )
+      .get(tokenHash) as { id: string; user_id: string } | undefined;
+    if (!row) return undefined;
+    try {
+      this.#db
+        .prepare("UPDATE api_tokens SET last_used_at = ? WHERE id = ?")
+        .run(Date.now(), row.id);
+    } catch {
+      // 触碰失败不影响请求。
+    }
+    return { tokenId: row.id, userId: row.user_id };
   }
 
   // ================= 审计事件与用量统计 =================

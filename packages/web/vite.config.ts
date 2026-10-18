@@ -55,6 +55,9 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      // 沙箱预览网关回源时会改写 Host（*.fcapp.run / 内部 ALB 域名），
+      // dev 服务器需放行任意 Host，否则网关侧全部 403。
+      allowedHosts: true,
       proxy: {
         // Web 登录本地调试时，OAuth token 交换必须先命中线上同源接口。
         // 该专用代理放在 `/api` 通配代理之前，避免被转发到本地 server 导致 404。
@@ -66,6 +69,10 @@ export default defineConfig(({ mode }) => {
         // 将 /ws 和 /api 请求代理到 server（默认 3030 端口）
         "/ws": { target: "ws://localhost:3030", ws: true },
         "/api": { target: "http://localhost:3030" },
+        // 平台单端口部署的 server 直属路径：分享公开落地页与健康检查。
+        // 注意：必须用正则 ^/s/ 而非前缀 /s —— 否则 /src/* 会被误代理到后端导致全站 404。
+        "^/s/": { target: "http://localhost:3030" },
+        "/healthz": { target: "http://localhost:3030" },
       },
     },
     optimizeDeps: {
