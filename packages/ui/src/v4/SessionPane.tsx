@@ -329,6 +329,14 @@ import {
   shouldOfferSideSlashCommand,
   type AppSlashCommand,
 } from "@/slashCommandHelpers.js";
+import { usePlatformUser } from "@/platformUserStore.js";
+import { platformApi, type PlatformPromptRow } from "@/settings/platformApi.js";
+import {
+  extractPromptTemplateVariables,
+  expandPromptTemplate,
+} from "@/lib/promptTemplateVariables.js";
+import type { LexicalChatInputHandle } from "@/LexicalChatInput.js";
+import { PromptVariableFillDialog } from "@/v4/PromptVariableFillDialog.js";
 import {
   clearConversationSelectionReferenceScope,
   dispatchConversationSelectionAdd,
@@ -2580,6 +2588,62 @@ export function SessionPane({
     [cliSlashCommandNames],
   );
 
+  // ---------- 平台提示词斜杠命令（OpenWebUI prompts / 对应） ----------
+  // 平台账号登录后拉取提示词库，把带 command 的提示词注入 / 目录：
+  // 选中即把内容（{{变量}} 先弹窗填写）填充进输入框，展开完全在前端完成。
+  const platformUser = usePlatformUser();
+  const [platformPrompts, setPlatformPrompts] = useState<readonly PlatformPromptRow[]>([]);
+  const composerInputApiRef = useRef<LexicalChatInputHandle | null>(null);
+  const [promptFillRequest, setPromptFillRequest] = useState<{
+    command: string;
+    title: string;
+    content: string;
+    variables: string[];
+  } | null>(null);
+
+  useEffect(() => {
+    if (!platformUser) {
+      setPlatformPrompts([]);
+      return;
+    }
+    let cancelled = false;
+    void platformApi<{ prompts: PlatformPromptRow[] }>("/api/platform/prompts")
+      .then((data) => {
+        if (!cancelled) setPlatformPrompts(data.prompts);
+      })
+      .catch(() => {
+        // 提示词库不可用不影响聊天主链路。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [platformUser]);
+
+  const insertPlatformPromptContent = useCallback((prompt: PlatformPromptRow) => {
+    const variables = extractPromptTemplateVariables(prompt.content);
+    if (variables.length === 0) {
+      composerInputApiRef.current?.setText(prompt.content);
+      composerInputApiRef.current?.focus();
+      return;
+    }
+    setPromptFillRequest({
+      command: prompt.command ?? "",
+      title: prompt.title,
+      content: prompt.content,
+      variables,
+    });
+  }, []);
+
+  const handlePromptFillConfirm = useCallback((expandedText: string) => {
+    setPromptFillRequest(null);
+    composerInputApiRef.current?.setText(expandedText);
+    composerInputApiRef.current?.focus();
+  }, []);
+  const handlePromptFillCancel = useCallback(() => {
+    setPromptFillRequest(null);
+    composerInputApiRef.current?.focus();
+  }, []);
+
   // `/side` App 层斜杠命令。命令目录仍以 CLI catalog 为权威，这里只在渲染层
   // 按门禁注入"选中即打开辅助对话"的本地命令；草稿态（无父 session 可挂 child）、
   // 辅助对话自身、只读与手机 viewport 均不提供。
@@ -2617,6 +2681,25 @@ export function SessionPane({
     selectionSideChat,
     sessionId,
   ]);
+
+  // 平台提示词 → / 目录：命令与 CLI/内置目录去重；description 展示标题，
+  // keywords 附带标题保证中文搜索可达。无 command 的提示词只出现在提示词库。
+  const platformPromptSlashCommands = useMemo<AppSlashCommand[]>(() => {
+    return platformPrompts
+      .filter((prompt) => Boolean(prompt.command))
+      .filter((prompt) => !cliSlashCommandNames.has(prompt.command!))
+      .map((prompt) => ({
+        value: prompt.command!,
+        description: prompt.title,
+        keywords: [prompt.command!, prompt.title],
+        run: () => insertPlatformPromptContent(prompt),
+      }));
+  }, [platformPrompts, cliSlashCommandNames, insertPlatformPromptContent]);
+
+  const mergedAppSlashCommands = useMemo(() => {
+    const base = appSlashCommands ?? [];
+    return [...base, ...platformPromptSlashCommands];
+  }, [appSlashCommands, platformPromptSlashCommands]);
 
   const chatLoadingBlockedByInteraction = hasChatLoadingBlockingInteraction(
     snapshot?.pendingInteractions ?? [],
@@ -5244,7 +5327,8 @@ export function SessionPane({
       onOpenModelUpgrade={handleOpenModelUpgrade}
       onOpenCodeViewer={onOpenCodeViewer}
       suppressGoalCommands={selectionSideChat}
-      appSlashCommands={appSlashCommands}
+      appSlashCommands={mergedAppSlashCommands}
+      externalInputApiRef={composerInputApiRef}
       onDropTargetControllerChange={handleDropTargetControllerChange}
     />
   );
@@ -5372,6 +5456,13 @@ export function SessionPane({
         />
       ) : null}
       {composerNode}
+      {!readOnly ? (
+        <PromptVariableFillDialog
+          request={promptFillRequest}
+          onConfirm={handlePromptFillConfirm}
+          onCancel={handlePromptFillCancel}
+        />
+      ) : null}
       {/* 办公模式显示主动任务推荐；编程模式保留原有小型场景入口。 */}
       {isDraft && (!isOfficeMode || sharedSettings?.proactiveSuggestionsEnabled === true) ? (
         <ConversationDraftSuggestedPromptsContainer

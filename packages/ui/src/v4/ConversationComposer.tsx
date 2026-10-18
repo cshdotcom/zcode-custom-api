@@ -497,6 +497,11 @@ export interface ConversationComposerProps {
   suppressGoalCommands?: boolean;
   /** App 层本地斜杠命令（如 `/side`），由 SessionPane 按门禁组装后透传。 */
   appSlashCommands?: readonly AppSlashCommand[];
+  /**
+   * 外部编辑器 API 句柄（可选）：平台提示词斜杠命令选中后由 SessionPane 直接
+   * setText 填充展开文本（OpenWebUI replaceSlashRangeWithPrompt 对应链路）。
+   */
+  externalInputApiRef?: React.MutableRefObject<LexicalChatInputHandle | null>;
   /** 把 composer 的 drop 路由暴露给整个对话 pane / 桌面草稿标题栏。 */
   onDropTargetControllerChange?: (controller: ConversationDropTargetController | null) => void;
 }
@@ -564,6 +569,7 @@ function ConversationComposerImpl({
   onComposerRestoreApplied,
   suppressGoalCommands = false,
   appSlashCommands,
+  externalInputApiRef,
   onDropTargetControllerChange,
 }: ConversationComposerProps) {
   const { intl, locale } = useZCodeIntl();
@@ -656,7 +662,8 @@ function ConversationComposerImpl({
   // 现在从必然拿到的 snapshot 推导，理由与边界见 resolveAttachableShareContext。
   const activeShareContext = resolveAttachableShareContext(snapshot?.sharedContextImport);
   const pendingShareContext = activeShareContext?.status === "pending" ? activeShareContext : null;
-  const inputApiRef = useRef<LexicalChatInputHandle | null>(null);
+  const internalInputApiRef = useRef<LexicalChatInputHandle | null>(null);
+  const inputApiRef = externalInputApiRef ?? internalInputApiRef;
   const reportedErrorKeysRef = useRef(new Set<string>());
   const isMobileTextInputViewport = useIsMobileTextInputViewport();
   const primaryModifierPressed = usePrimaryFollowupModifier();

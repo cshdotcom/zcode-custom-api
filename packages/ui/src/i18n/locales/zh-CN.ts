@@ -271,6 +271,8 @@ const zhCN: Record<string, string> = {
   "common.generating": "生成中...",
   "common.connecting": "连接中...",
   "common.cancel": "取消",
+  "platform.promptVariables.description": "请填写提示词中的变量（{{变量}} 占位符），填写后将展开为最终文本。",
+  "platform.promptVariables.confirm": "插入",
   "common.retry": "重试",
   "common.close": "关闭",
   "chat.plan.removeMarker": "关闭计划模式",

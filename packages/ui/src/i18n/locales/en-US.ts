@@ -287,6 +287,8 @@ const enUS: Record<string, string> = {
   "common.generating": "Generating...",
   "common.connecting": "Connecting...",
   "common.cancel": "Cancel",
+  "platform.promptVariables.description": "Fill in the {{variable}} placeholders; the prompt will be expanded into the composer.",
+  "platform.promptVariables.confirm": "Insert",
   "common.retry": "Retry",
   "common.close": "Close",
   "chat.plan.removeMarker": "Turn off Plan mode",

@@ -1054,13 +1054,18 @@ export function registerPlatformRoutes(app: Hono<PlatformEnv>, deps: PlatformDep
     if (!title) return jsonError(c, "标题不能为空");
     if (!content.trim()) return jsonError(c, "内容不能为空");
     const isGlobal = body.global === true && user.role === "admin";
-    const prompt = store.createPrompt({
-      ...(isGlobal ? {} : { ownerId: user.id }),
-      title: title.slice(0, 200),
-      content: content.slice(0, 32_000),
-    });
-    store.recordEvent("prompt.create", user, title);
-    return c.json({ prompt });
+    try {
+      const prompt = store.createPrompt({
+        ...(isGlobal ? {} : { ownerId: user.id }),
+        title: title.slice(0, 200),
+        content: content.slice(0, 32_000),
+        ...(body.command !== undefined ? { command: String(body.command) } : {}),
+      });
+      store.recordEvent("prompt.create", user, title);
+      return c.json({ prompt });
+    } catch (error) {
+      return jsonError(c, error instanceof Error ? error.message : String(error));
+    }
   });
 
   app.patch("/api/platform/prompts/:id", async (c) => {
@@ -1073,6 +1078,7 @@ export function registerPlatformRoutes(app: Hono<PlatformEnv>, deps: PlatformDep
       const prompt = store.updatePrompt(c.req.param("id"), user, {
         ...(body.title !== undefined ? { title: String(body.title).slice(0, 200) } : {}),
         ...(body.content !== undefined ? { content: String(body.content).slice(0, 32_000) } : {}),
+        ...(body.command !== undefined ? { command: String(body.command) } : {}),
       });
       return c.json({ prompt });
     } catch (error) {

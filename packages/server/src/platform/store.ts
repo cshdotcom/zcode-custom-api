@@ -108,6 +108,8 @@ export interface PlatformPrompt {
   ownerUsername?: string;
   title: string;
   content: string;
+  /** 斜杠命令（可选，/xxx 触发聊天输入展开；OpenWebUI prompt.command 对应）。 */
+  command?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -313,6 +315,12 @@ export class PlatformStore {
       } catch {
         // 列已存在时忽略（SQLite ALTER 无 IF NOT EXISTS）。
       }
+    }
+    // 提示词斜杠命令列（OpenWebUI prompt.command 对应）。
+    try {
+      this.#db.exec("ALTER TABLE prompts ADD COLUMN command TEXT;");
+    } catch {
+      // 列已存在时忽略。
     }
   }
 
@@ -1011,6 +1019,7 @@ export class PlatformStore {
         content: string;
         created_at: number;
         updated_at: number;
+        command?: string | null;
       }>
     ).map((row) => ({
       id: row.id,
@@ -1018,27 +1027,47 @@ export class PlatformStore {
       ...(row.owner_username ? { ownerUsername: row.owner_username } : {}),
       title: row.title,
       content: row.content,
+      ...(row.command ? { command: row.command } : {}),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     }));
     return rows;
   }
 
-  createPrompt(input: { ownerId?: string; title: string; content: string }): PlatformPrompt {
+  createPrompt(input: {
+    ownerId?: string;
+    title: string;
+    content: string;
+    command?: string;
+  }): PlatformPrompt {
+    const command = normalizePromptCommand(input.command);
+    if (command && this.#promptCommandTaken(command, input.ownerId ?? null)) {
+      throw new Error(`斜杠命令 /${command} 已被占用`);
+    }
     const id = `p_${randomBytes(9).toString("hex")}`;
     const now = Date.now();
     this.#db
       .prepare(
-        "INSERT INTO prompts (id, owner_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO prompts (id, owner_id, title, content, command, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       )
-      .run(id, input.ownerId ?? null, input.title, input.content, now, now);
+      .run(id, input.ownerId ?? null, input.title, input.content, command ?? null, now, now);
     return this.#getPromptOrThrow(id);
+  }
+
+  #promptCommandTaken(command: string, ownerId: string | null): boolean {
+    // 命令在"对当前用户可见集合"内唯一：全局 + 本人；避免同名冲突。
+    const row = this.#db
+      .prepare(
+        "SELECT id FROM prompts WHERE command = ? AND (owner_id IS NULL OR owner_id = ?) LIMIT 1",
+      )
+      .get(command, ownerId) as { id: string } | undefined;
+    return Boolean(row);
   }
 
   updatePrompt(
     id: string,
     viewer: PlatformUser,
-    patch: { title?: string; content?: string },
+    patch: { title?: string; content?: string; command?: string },
   ): PlatformPrompt {
     const existing = this.#db.prepare("SELECT * FROM prompts WHERE id = ?").get(id) as
       | { id: string; owner_id: string | null }
@@ -1047,13 +1076,24 @@ export class PlatformStore {
     if (existing.owner_id && existing.owner_id !== viewer.id && viewer.role !== "admin") {
       throw new Error("无权修改他人的提示词");
     }
+    const command =
+      patch.command !== undefined ? normalizePromptCommand(patch.command) : undefined;
+    if (command) {
+      const taken = this.#db
+        .prepare(
+          "SELECT id FROM prompts WHERE command = ? AND (owner_id IS NULL OR owner_id = ?) AND id != ? LIMIT 1",
+        )
+        .get(command, existing.owner_id, id) as { id: string } | undefined;
+      if (taken) throw new Error(`斜杠命令 /${command} 已被占用`);
+    }
     this.#db
       .prepare(
-        "UPDATE prompts SET title = ?, content = ?, updated_at = ? WHERE id = ?",
+        "UPDATE prompts SET title = ?, content = ?, command = ?, updated_at = ? WHERE id = ?",
       )
       .run(
         patch.title ?? this.#getPromptTitle(id),
         patch.content ?? this.#getPromptContent(id),
+        command !== undefined ? (command || null) : (existing as { command?: string | null }).command ?? null,
         Date.now(),
         id,
       );
@@ -1475,6 +1515,14 @@ export class PlatformStore {
 }
 
 export const PASSWORD_MIN = PASSWORD_MIN_LENGTH;
+
+/** 斜杠命令归一化：去前导 /、小写化、白名单校验；非法输入返回空串（视为未设置）。 */
+export function normalizePromptCommand(raw: string | undefined | null): string {
+  const value = (raw ?? "").trim().replace(/^\/+/, "").toLowerCase();
+  if (!value) return "";
+  if (!/^[a-z0-9_-]{1,64}$/.test(value)) return "";
+  return value;
+}
 
 /**
  * 文档分块：优先按空行分段，超长段落再按固定窗口切分（带少量重叠），

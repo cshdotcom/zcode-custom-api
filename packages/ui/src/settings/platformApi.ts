@@ -87,6 +87,8 @@ export interface PlatformPromptRow {
   ownerUsername?: string;
   title: string;
   content: string;
+  /** 斜杠命令（可选）：聊天输入 /命令 触发展开。 */
+  command?: string;
   createdAt: number;
   updatedAt: number;
 }

@@ -92,6 +92,11 @@ export interface PlatformSectionCopy {
   createPromptAction: string;
   promptTitleLabel: string;
   promptContentLabel: string;
+  promptCommandLabel: string;
+  promptCommandHint: string;
+  promptCommandTaken: string;
+  promptCommandBadge: string;
+  promptInsertHint: string;
   promptGlobalToggle: string;
   promptGlobalBadge: string;
   promptCopied: string;
@@ -303,6 +308,11 @@ const PLATFORM_SECTION_COPY = {
     createPromptAction: "新建提示词",
     promptTitleLabel: "标题",
     promptContentLabel: "内容",
+    promptCommandLabel: "斜杠命令（可选）",
+    promptCommandHint: "聊天输入框输入 /命令 即可展开该提示词；仅限字母、数字、- 和 _",
+    promptCommandTaken: "该斜杠命令已被占用",
+    promptCommandBadge: "命令",
+    promptInsertHint: "支持 {{变量}} 占位符，插入聊天时会提示填写",
     promptGlobalToggle: "设为全局（所有用户可见，仅管理员）",
     promptGlobalBadge: "全局",
     promptCopied: "已复制到剪贴板",
@@ -389,6 +399,11 @@ const PLATFORM_SECTION_COPY = {
     createPromptAction: "New Prompt",
     promptTitleLabel: "Title",
     promptContentLabel: "Content",
+    promptCommandLabel: "Slash command (optional)",
+    promptCommandHint: "Type /command in the chat composer to insert this prompt; letters, digits, - and _ only",
+    promptCommandTaken: "This slash command is already taken",
+    promptCommandBadge: "Cmd",
+    promptInsertHint: "Supports {{variable}} placeholders; you'll be asked to fill them on insert",
     promptGlobalToggle: "Make global (visible to all users, admin only)",
     promptGlobalBadge: "Global",
     promptCopied: "Copied to clipboard",

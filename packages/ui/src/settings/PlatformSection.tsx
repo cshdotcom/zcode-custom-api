@@ -804,6 +804,7 @@ function PromptsSection(): React.ReactElement {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [command, setCommand] = useState("");
   const [isGlobal, setIsGlobal] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -828,6 +829,7 @@ function PromptsSection(): React.ReactElement {
     setEditingId(null);
     setTitle("");
     setContent("");
+    setCommand("");
     setIsGlobal(false);
     setCreateOpen(true);
   };
@@ -836,6 +838,7 @@ function PromptsSection(): React.ReactElement {
     setEditingId(prompt.id);
     setTitle(prompt.title);
     setContent(prompt.content);
+    setCommand(prompt.command ?? "");
     setIsGlobal(!prompt.ownerId);
     setCreateOpen(true);
   };
@@ -848,12 +851,12 @@ function PromptsSection(): React.ReactElement {
       if (editingId) {
         await platformApi(`/api/platform/prompts/${editingId}`, {
           method: "PATCH",
-          body: JSON.stringify({ title, content }),
+          body: JSON.stringify({ title, content, command }),
         });
       } else {
         await platformApi("/api/platform/prompts", {
           method: "POST",
-          body: JSON.stringify({ title, content, global: isGlobal && isAdmin }),
+          body: JSON.stringify({ title, content, command, global: isGlobal && isAdmin }),
         });
       }
       setCreateOpen(false);
@@ -914,6 +917,17 @@ function PromptsSection(): React.ReactElement {
             value={title}
             onChange={(event) => setTitle(event.target.value)}
           />
+          <div className="space-y-1">
+            <Input
+              size="lg"
+              placeholder={copy.promptCommandLabel}
+              value={command}
+              maxLength={64}
+              onChange={(event) => setCommand(event.target.value.replace(/^\/+/, ""))}
+            />
+            <p className="text-ui-xs text-foreground-subtle">{copy.promptCommandHint}</p>
+            <p className="text-ui-xs text-foreground-subtle">{copy.promptInsertHint}</p>
+          </div>
           <Textarea
             rows={5}
             placeholder={copy.promptContentLabel}
@@ -949,6 +963,11 @@ function PromptsSection(): React.ReactElement {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate text-ui-sm font-medium text-foreground">{prompt.title}</span>
+                  {prompt.command ? (
+                    <code className="shrink-0 rounded bg-surface px-1.5 py-0.5 font-mono text-ui-xs text-foreground-subtle">
+                      /{prompt.command}
+                    </code>
+                  ) : null}
                   {!prompt.ownerId ? <Badge variant="secondary">{copy.promptGlobalBadge}</Badge> : null}
                 </div>
                 <div className="flex items-center gap-1">
