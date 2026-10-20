@@ -881,6 +881,23 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
     setPendingSettingsSectionIntent("platformKnowledge");
     openSettingsTab();
   }, [openSettingsTab]);
+  // 平台用户菜单分区导航（OpenWebUI UserMenu 对齐）：账号设置/知识库/提示词/平台管理
+  // 统一走设置 intent 机制，由 SettingsPage 消费并直达对应分区。
+  const handleOpenPlatformSection = useCallback(
+    (section: "platform" | "platformKnowledge" | "platformPrompts" | "platformAdmin") => {
+      setPendingSettingsSectionIntent(section);
+      openSettingsTab();
+    },
+    [openSettingsTab],
+  );
+  // 平台账号登出：清除 HttpOnly 会话 cookie 后整页刷新，重启 SPA 引导回到登录门。
+  const handlePlatformLogout = useCallback(() => {
+    void fetch("/api/platform/auth/logout", { method: "POST" })
+      .catch(() => undefined)
+      .finally(() => {
+        window.location.assign("/");
+      });
+  }, []);
   const handleOpenCodingPlanUpgrade = useCallback(
     (
       providerId: string,
@@ -1946,6 +1963,8 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
             onUpgradeClick={handleOpenCodingPlanUpgrade}
             onLogin={onLogin}
             onLogout={onLogout}
+            onOpenPlatformSection={handleOpenPlatformSection}
+            onPlatformLogout={handlePlatformLogout}
             user={user}
             workspacePath={workspacePath}
             workspaceIdentity={workspaceIdentity}

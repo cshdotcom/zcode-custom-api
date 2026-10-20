@@ -89,6 +89,10 @@ export function getWindowControllerTaskListRegistry(
   let generation = 0;
   let notificationScheduled = false;
   let frameDisposable: { dispose(): void } | null = null;
+  // Standalone Web 部署没有桌面 Host，server 侧永不注册 window-controller 通道：
+  // 订阅/查询会每次以 "Unknown channel" 超时告终并刷满控制台。首次命中后永久降级为
+  // 空结果注册表（不再发 RPC、不再告警），桌面端真实通道故障不受影响（错误语义不同）。
+  let channelUnavailable = false;
 
   const notifyOnce = (): void => {
     if (notificationScheduled) return;
@@ -118,7 +122,7 @@ export function getWindowControllerTaskListRegistry(
   };
 
   const start = (): void => {
-    if (started) return;
+    if (started || channelUnavailable) return;
     started = true;
     const startGeneration = ++generation;
     frameDisposable = controller.onDynamicControllerFrame()((frame: WindowHostControllerFrame) => {
@@ -198,9 +202,20 @@ export function getWindowControllerTaskListRegistry(
         }
         subscriptionIds.add(result.ack.subscriptionId);
       }),
-    ).catch((error) =>
-      logger.warn("[windowControllerTaskListRegistry] Controller subscribe 失败", error),
-    );
+    ).catch((error) => {
+      if (String((error as Error)?.message ?? error).includes("Unknown channel")) {
+        channelUnavailable = true;
+        started = false;
+        generation += 1;
+        frameDisposable?.dispose();
+        frameDisposable = null;
+        logger.info(
+          "[windowControllerTaskListRegistry] window-controller 通道不可用（standalone Web 无桌面 Host），任务列表降级为空",
+        );
+        return;
+      }
+      logger.warn("[windowControllerTaskListRegistry] Controller subscribe 失败", error);
+    });
   };
 
   const registry: WindowControllerTaskListRegistry = {
@@ -216,6 +231,9 @@ export function getWindowControllerTaskListRegistry(
       return revision;
     },
     list(queryKey, version, query) {
+      if (channelUnavailable) {
+        return Promise.resolve({ items: [], total: 0, hasMore: false });
+      }
       const versionKey = cacheVersionKey(version);
       const cached = queryCache.get(queryKey);
       if (cached?.versionKey === versionKey) return cached.promise;

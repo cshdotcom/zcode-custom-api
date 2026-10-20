@@ -1706,6 +1706,11 @@ const zhCN: Record<string, string> = {
   "workspace.openFolder": "打开文件夹",
   "workspace.openPluginsSettings": "插件市场",
   "workspace.openPlatformKnowledge": "知识库",
+  // 平台用户菜单（OpenWebUI UserMenu 对齐）：账号设置 / 知识库 / 提示词 / 平台管理。
+  "platform.menu.accountSettings": "账号设置",
+  "platform.menu.knowledge": "知识库",
+  "platform.menu.prompts": "提示词",
+  "platform.menu.admin": "平台管理",
   "workspace.backToWorkspace": "返回工作区",
   "workspace.noActiveForNewTask": "当前还没有可用的工作区，请先打开一个工作区。",
   "workspace.wslUncPrompt.title": "建议通过 WSL 远程连接打开",

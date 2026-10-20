@@ -1830,6 +1830,11 @@ const enUS: Record<string, string> = {
   "workspace.openFolder": "Open folder",
   "workspace.openPluginsSettings": "Plugin Marketplace",
   "workspace.openPlatformKnowledge": "Knowledge",
+  // Platform user menu (OpenWebUI UserMenu parity): account / knowledge / prompts / admin.
+  "platform.menu.accountSettings": "Account settings",
+  "platform.menu.knowledge": "Knowledge",
+  "platform.menu.prompts": "Prompts",
+  "platform.menu.admin": "Admin panel",
   "workspace.backToWorkspace": "Back to workspace",
   "workspace.noActiveForNewTask": "There is no available workspace yet. Open a workspace first.",
   "workspace.wslUncPrompt.title": "Open this through WSL remote connection?",

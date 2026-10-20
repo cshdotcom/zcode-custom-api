@@ -32,12 +32,15 @@ import {
   PencilRuler,
   Globe,
   Gift,
+  LibraryBig,
   Loader2,
   LogInIcon,
   LogOut,
   Maximize,
+  MessageSquareText,
   Palette,
   Settings,
+  ShieldUser,
   User,
   ZoomIn,
   ZoomOut,
@@ -100,6 +103,8 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
   onUpgradeClick,
   onLogin,
   onLogout,
+  onOpenPlatformSection,
+  onPlatformLogout,
   settingsButtonMode = "settings",
   user,
   workspacePath,
@@ -121,6 +126,12 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
   >[0]["onUpgradeClick"];
   onLogin?: () => void;
   onLogout?: () => void;
+  /** 平台分区导航（OpenWebUI UserMenu 对齐）：账号设置/知识库/提示词/平台管理。 */
+  onOpenPlatformSection?: (
+    section: "platform" | "platformKnowledge" | "platformPrompts" | "platformAdmin",
+  ) => void;
+  /** 平台账号登出（POST /api/platform/auth/logout → 刷新回登录门）。 */
+  onPlatformLogout?: () => void;
   settingsButtonMode?: "settings" | "back";
   user?: UserInfo | null;
   workspacePath?: string;
@@ -444,6 +455,43 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             ) : null}
+            {/* 平台账号菜单组（OpenWebUI UserMenu 对齐）：账号设置/知识库/提示词/平台管理。
+                仅平台账号登录时出现；平台管理仅 admin 可见。 */}
+            {platformUser && onOpenPlatformSection ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => onOpenPlatformSection("platform")}
+                  data-testid="platform-account-menu-item"
+                >
+                  <User className="size-4" />
+                  {intl.formatMessage({ id: "platform.menu.accountSettings" })}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => onOpenPlatformSection("platformKnowledge")}
+                  data-testid="platform-knowledge-menu-item"
+                >
+                  <LibraryBig className="size-4" />
+                  {intl.formatMessage({ id: "platform.menu.knowledge" })}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => onOpenPlatformSection("platformPrompts")}
+                  data-testid="platform-prompts-menu-item"
+                >
+                  <MessageSquareText className="size-4" />
+                  {intl.formatMessage({ id: "platform.menu.prompts" })}
+                </DropdownMenuItem>
+                {platformUser.role === "admin" ? (
+                  <DropdownMenuItem
+                    onSelect={() => onOpenPlatformSection("platformAdmin")}
+                    data-testid="platform-admin-menu-item"
+                  >
+                    <ShieldUser className="size-4" />
+                    {intl.formatMessage({ id: "platform.menu.admin" })}
+                  </DropdownMenuItem>
+                ) : null}
+              </>
+            ) : null}
             {/* Bugfix: 升级入口状态不再以菜单开关为生命周期边界。 */}
             <WorkspaceSidebarFooterUsageSummaryContent
               state={usageSummaryState}
@@ -474,6 +522,15 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
             {onLogout ? <DropdownMenuSeparator /> : null}
             {onLogout ? (
               <DropdownMenuItem onSelect={onLogout} data-testid={TID_LOGOUT_BUTTON}>
+                <LogOut className="size-4" />
+                {intl.formatMessage({ id: "app.logout" })}
+              </DropdownMenuItem>
+            ) : null}
+            {/* Bugfix（OpenWebUI Sign Out 对齐）：纯平台账号模式下官方 onLogout 缺位，
+                此前菜单里没有登出项，平台用户无法退出登录。这里补平台登出。 */}
+            {!onLogout && platformUser && onPlatformLogout ? <DropdownMenuSeparator /> : null}
+            {!onLogout && platformUser && onPlatformLogout ? (
+              <DropdownMenuItem onSelect={onPlatformLogout} data-testid={TID_LOGOUT_BUTTON}>
                 <LogOut className="size-4" />
                 {intl.formatMessage({ id: "app.logout" })}
               </DropdownMenuItem>

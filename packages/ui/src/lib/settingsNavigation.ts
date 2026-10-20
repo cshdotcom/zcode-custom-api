@@ -80,7 +80,14 @@ function isSettingsSectionId(value: string): value is SettingsSectionId {
     value === "workspaceFileSearch" ||
     value === "computerUse" ||
     value === "automations" ||
-    value === "shortcuts"
+    value === "shortcuts" ||
+    // Bugfix: 平台四分区此前漏在枚举里，导致 pending intent 与“上次停留分区”
+    // 一律被判为非法值——侧边栏「知识库」与用户菜单直达全部回落 general，
+    // 且 platformKnowledge 记忆项被误删。补齐后 intent/记忆链路恢复正常。
+    value === "platform" ||
+    value === "platformKnowledge" ||
+    value === "platformPrompts" ||
+    value === "platformAdmin"
   );
 }
 
