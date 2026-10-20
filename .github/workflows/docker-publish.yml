@@ -44,7 +44,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
-            type=raw,value=v3.15.1-standalone.8
+            type=raw,value=v3.15.1-standalone.9
 
       - uses: docker/build-push-action@v6
         with:
